@@ -10,7 +10,7 @@ Usage:
 /// 启动参数
 /// ```json
 /// {
-///     "bind": {
+///     "listen": {
 ///         "ip": "127.0.0.1",
 ///         "port": 8889
 ///     },
@@ -25,25 +25,21 @@ struct Addr {
     port: u32,
 }
 struct Node {
-    bind: Addr,
+    /// 监听的端口
+    listen: Addr,
+    /// 
     peers: Vec<Addr>,
+    
+    /// leader 选举
+  
+    /// 日志复制
+    commitIdx: u32,
 }
 
 impl Node {
     ///
     /// 从命令行初始化节点
-    fn from_args() -> Node {
-        for argument in env::args() {
-            println!("args = {}", argument);
-        }
-        // 初始化节点
-        Node {
-            bind: {
-                ip: String::from("123"),
-                port: 0,
-            },
-            peers: vec![],
-        }
+    fn from_args() -> Rc<Node> {
     }
 
     /// 运行此节点
