@@ -19,8 +19,8 @@ C++ 实现 Raft 共识算法
 }
 ```
 
-- **op** 操作类型，必须时 string 类型
-- **params** 参数，必须时一个 object 类型
+- **op** 操作类型，必须是 string 类型
+- **params** 参数，必须是 object 类型
 
 ### 2.2 内部指令
 
