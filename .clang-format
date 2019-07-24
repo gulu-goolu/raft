@@ -1,0 +1,21 @@
+---
+Language:        Cpp
+BasedOnStyle:  Mozilla
+AlignAfterOpenBracket: DontAlign
+IndentWidth: 4
+AccessModifierOffset: -4
+AlignOperands: true
+AlignEscapedNewlines: DontAlign
+AlwaysBreakBeforeMultilineStrings: true
+AllowShortCaseLabelsOnASingleLine: true
+AlwaysBreakAfterReturnType: None
+AlwaysBreakAfterDefinitionReturnType: None
+BreakBeforeBraces: Attach
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: AfterColon 
+ContinuationIndentWidth: 4
+MaxEmptyLinesToKeep: 1
+PointerAlignment: Right
+UseTab: Never
+TabWidth: 4
+...
