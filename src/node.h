@@ -10,20 +10,14 @@ enum class NodeType {
     Leader,
 };
 
-// Node 内部包括四个线程
-//   主线程
-//   选举线程，负责发起选举
-//   下面两个是只有 Leader 才有的线程
-//       心跳线程，负责向 follower 发送心跳包
-//       用户线程，监听 1024 端口，处理用户发出的命令
+// 节点
 class Node {
 public:
     Node() = default;
     ~Node();
-    // 处理请求
-    Json handle_request(const Json &request);
-    void user_thread();
-    // 处理用户命令
+    void user();
+    // 处理命令
+    String handle_internal_command(const String &op, const Json &params);
     String handle_user_command(const String &op, const Json &params);
     // 选举
     void vote();
@@ -42,7 +36,7 @@ private:
     uint32_t term_ = 0;
     // 选举定时器
     std::unique_ptr<Timer> vote_timer_;
-    // 心跳时钟
+    // 心跳定时器
     std::unique_ptr<Timer> heart_timer_;
     // 用户线程
     std::thread user_thr_ = {};

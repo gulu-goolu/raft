@@ -1,5 +1,25 @@
 #include "pch.h"
 
+Config Config::from(const String &str) {
+    Config config = {};
+
+    const auto obj = Json::parse(str);
+    if (obj.contains("leader")) {
+        config.leader = obj["leader"].get<uint16_t>();
+    }
+    if (obj.contains("nodes")) {
+        for (const auto &node : obj["nodes"]) {
+            config.nodes.push_back(node.get<uint16_t>());
+        }
+    }
+
+    return config;
+}
+
+Config Config::load(const char *path) {
+    return from(read_file(path));
+}
+
 String read_file(const char *path) {
     FILE *fp = nullptr;
     fp = fopen(path, "r");
@@ -18,13 +38,14 @@ String read_file(const char *path) {
     if (fread(&buf[0], 1, len, fp) != len) {
         throw std::logic_error("");
     }
+    printf("read %s:%s\n", path, buf.c_str());
     fclose(fp);
 
     return buf;
 }
 
 void write_file(const String &path, const String &buf) {
-    printf("write path: %s, %s\n", path.c_str(), buf.c_str());
+    printf("write %s: %s\n", path.c_str(), buf.c_str());
     FILE *fp = nullptr;
     fp = fopen(path.c_str(), "w+");
     if (!fp) {
@@ -41,40 +62,33 @@ void write_file(const String &path, const String &buf) {
     fclose(fp);
 }
 
-Config Config::from(const String &str) {
-    Config config = {};
-
-    const auto obj = Json::parse(str);
-    if (obj.contains("leader")) {
-        config.leader = obj["leader"].get<uint16_t>();
-    }
-    if (obj.contains("nodes")) {
-        for (const auto &node : obj["nodes"]) {
-            config.nodes.push_back(node.get<uint16_t>());
-        }
-    }
-
-    return config;
-}
-
-String read_all(int fd) {
+String recv_all(int fd) {
     // 读数据
-    String request;
+    String data;
     do {
         char buf[4096];
-        int len = -1; // 接受数据长度
+        int len = -1;
         if ((len = recv(fd, buf, sizeof(buf), 0)) == -1) {
+            // 读取数据失败，打印错误，返回空字符串
             perror("recv failed");
-            abort();
+            return "";
         }
-        request += String(buf, buf + len); // 将数据添加到 request 当中
+        data += String(buf, buf + len); // 将数据追加到 data 当中
 
         // 如果数据小于缓冲区长度，表示数据已处理完
         if (len != sizeof(buf)) {
             break;
         }
     } while (true);
-    return request;
+    return data;
+}
+
+void send_all(int fd, const String &buf) {
+    if (send(fd, buf.data(), buf.size(), 0) != buf.size()) {
+        char msg[1024] = {};
+        sprintf(msg, "send %s failed\n", buf.c_str());
+        perror(msg);
+    }
 }
 
 String send_request(uint16_t port, const String &req) {
@@ -87,26 +101,13 @@ String send_request(uint16_t port, const String &req) {
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
     if (connect(fd, (struct sockaddr *)(&addr), sizeof(addr)) == -1) {
         char buf[1024] = {};
-        sprintf(buf, "connection to %d failed", port);
+        sprintf(buf, "connect to %d failed", port);
         perror(buf);
     }
 
     // 发送数据
-    assert(send(fd, req.data(), req.size(), 0) == req.size());
-
-    String rep;
-
-    while (true) {
-        char buf[4096];
-        int len = recv(fd, buf, sizeof(buf), 0);
-        if (len > 0) {
-            rep.append(buf, buf + len);
-        }
-        if (len != 4096) {
-            break;
-        }
-    }
-
+    send_all(fd, req);
+    String rep = recv_all(fd);
     close(fd);
 
     return rep;

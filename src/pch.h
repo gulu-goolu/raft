@@ -28,7 +28,13 @@
 #include "../3rdparty/json/single_include/nlohmann/json.hpp"
 
 using namespace std::chrono;
-using namespace std::chrono_literals;
+
+#if __cplusplus < 201403
+template<typename T, typename... Args>
+std::unique_ptr<T> make_unique(Args &&... args) {
+    return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
+}
+#endif
 
 // type alias
 template<typename _Ty>
@@ -38,6 +44,7 @@ using Json = nlohmann::json;
 template<typename _Kty, typename _Ty>
 using HashMap = std::unordered_map<_Kty, _Ty>;
 
+// vote operation
 struct Vote {
     uint32_t term;
     static String request(uint32_t term) {
@@ -55,7 +62,7 @@ struct Vote {
     }
 };
 
-// 心跳包
+// heart operation
 struct Heart {
     // 任期
     uint32_t term;
@@ -70,10 +77,41 @@ struct Heart {
     static String response() { return "{}"; }
 };
 
-// 读取文件
-String read_file(const char *path);
-// 写文件
-void write_file(const String &path, const String &buf);
+// echo operation
+struct Echo {
+    static String response(uint16_t id) {
+        Json obj = { { "id", id } };
+        return obj.dump();
+    }
+};
+
+// set operation
+struct Set {
+    static String response(const String &key, const String &value) {
+        const Json obj = {
+            { key, value },
+        };
+        return obj.dump();
+    }
+};
+
+// get operation
+struct Get {
+    static String response(const String &key, const String *value) {
+        if (value) {
+            const Json obj = {
+                { key, *value },
+            };
+            return obj.dump();
+        } else {
+            const Json obj = {
+                { key, nullptr },
+            };
+            return obj.dump();
+        }
+    }
+};
+
 
 // 集群配置信息
 struct Config {
@@ -81,7 +119,7 @@ struct Config {
     uint16_t leader;
 
     static Config from(const String &str);
-    static Config load(const char *path) { return from(read_file(path)); }
+    static Config load(const char *path);
 };
 
 // 定时器
@@ -144,10 +182,6 @@ private:
     std::condition_variable work_cv_ = {};
 };
 
-String read_all(int fd);
-// 发送请求
-String send_request(uint16_t port, const String &request);
-
 class Socket {
 public:
     ~Socket() {
@@ -155,8 +189,6 @@ public:
             close(fd_);
         }
     }
-
-    String read_all() const { return ::read_all(fd_); }
 
     void send(const String &buf) {
         ssize_t len = 0;
@@ -187,5 +219,16 @@ public:
 private:
     int fd_;
 };
+
+// 读取文件
+String read_file(const char *path);
+// 写文件
+void write_file(const String &path, const String &buf);
+// 读取全部内容
+String recv_all(int fd);
+// 回复
+void send_all(int fd, const String &buf);
+// 发送请求
+String send_request(uint16_t port, const String &request);
 
 #endif

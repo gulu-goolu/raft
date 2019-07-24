@@ -42,8 +42,7 @@ def send_set_request(key, value):
             "value": value
         }
     }
-    response = send_request(json.dumps(request))
-    print(response)
+    send_request(json.dumps(request))
 
 
 # 获取
@@ -51,11 +50,10 @@ def send_get_request(key):
     request = {
         "op": "get",
         "params": {
-            "key": "key"
+            "key": key
         }
     }
-    response = send_request(json.dumps(request))
-    print(response)
+    send_request(json.dumps(request))
 
 
 # 退出
@@ -64,7 +62,7 @@ def send_exit_request():
         "op": "exit",
         "params": {}
     }
-    response = send_request(json.dumps(request))
+    send_request(json.dumps(request))
 
 
 # echo
@@ -73,7 +71,7 @@ def send_echo_request():
         "op": "echo",
         "params": {}
     }
-    print(send_request(json.dumps(request)))
+    send_request(json.dumps(request))
 
 
 # 主函数

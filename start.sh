@@ -11,13 +11,3 @@ do (
 done
 
 pidof raft-node
-
-# 睡眠 50 s
-sleep 100
-
-# 等待执行完毕
-wait
-
-# kill `pidof raft-node`
-
-echo -E "complete"
