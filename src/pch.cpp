@@ -1,25 +1,5 @@
 #include "pch.h"
 
-Config Config::from(const String &str) {
-    Config config = {};
-
-    const auto obj = Json::parse(str);
-    if (obj.contains("leader")) {
-        config.leader = obj["leader"].get<uint16_t>();
-    }
-    if (obj.contains("nodes")) {
-        for (const auto &node : obj["nodes"]) {
-            config.nodes.push_back(node.get<uint16_t>());
-        }
-    }
-
-    return config;
-}
-
-Config Config::load(const char *path) {
-    return from(read_file(path));
-}
-
 String read_file(const char *path) {
     FILE *fp = nullptr;
     fp = fopen(path, "r");
@@ -86,29 +66,8 @@ String recv_all(int fd) {
 void send_all(int fd, const String &buf) {
     if (send(fd, buf.data(), buf.size(), 0) != buf.size()) {
         char msg[1024] = {};
-        sprintf(msg, "send %s failed\n", buf.c_str());
+        sprintf(msg, "send %s failed", buf.c_str());
         perror(msg);
     }
 }
 
-String send_request(uint16_t port, const String &req) {
-    int fd = -1;
-    assert((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) != -1);
-
-    sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-    if (connect(fd, (struct sockaddr *)(&addr), sizeof(addr)) == -1) {
-        char buf[1024] = {};
-        sprintf(buf, "connect to %d failed", port);
-        perror(buf);
-    }
-
-    // 发送数据
-    send_all(fd, req);
-    String rep = recv_all(fd);
-    close(fd);
-
-    return rep;
-}
