@@ -3,21 +3,98 @@
 
 #include "pch.h"
 
-// 定时器
+/**
+ * 引用计数基类
+ */
+class RefCounted {
+public:
+    NOCOPYABLE_BODY(RefCounted)
+
+    RefCounted() = default;
+    virtual ~RefCounted() = default;
+
+    void inc_ref();
+    void dec_ref();
+
+private:
+    std::atomic<int> ref_count_ = { 1 };
+};
+
+/**
+ * 引用计数智能指针
+ */
+template<typename T>
+class Ptr {
+public:
+    Ptr() = default;
+    Ptr(std::nullptr_t) : ptr_(nullptr) {}
+    Ptr(const Ptr<T> &other) : ptr_(nullptr) { set(other.ptr_); }
+    Ptr(Ptr<T> &&other) noexcept : ptr_(nullptr) {
+        ptr_ = other.ptr_;
+        other.ptr_ = nullptr;
+    }
+    ~Ptr() { set(nullptr); }
+
+    Ptr<T> &operator=(const Ptr<T> &other) {
+        set(other.ptr_);
+        return *this;
+    }
+    Ptr<T> &operator=(Ptr<T> &&other) noexcept {
+        ptr_ = other.ptr_;
+        other.ptr_ = nullptr;
+        return *this;
+    }
+
+    T *operator->() const { return ptr_; }
+
+    operator bool() const { return ptr_ != nullptr; }
+    bool operator==(std::nullptr_t) const { return ptr_ == nullptr; }
+
+    void set(T *ptr) {
+        if (ptr) {
+            ptr->inc_ref();
+        }
+        if (ptr_) {
+            ptr_->dec_ref();
+        }
+        ptr_ = ptr;
+    }
+
+    static Ptr<T> from(T *ptr) {
+        Ptr<T> t;
+        t.ptr_ = ptr;
+        return t;
+    }
+
+    template<typename... Args>
+    static Ptr<T> make(Args &&... args) {
+        return Ptr<T>::from(new T(std::forward<Args>(args)...));
+    }
+
+private:
+    T *ptr_ = nullptr;
+};
+
+/**
+ * 定时器，由后台进程，条件变量两部分组成：
+ *   后台进程：执行回调函数
+ *   条件变量：超时等待，和主线程同步
+ */
 class Timer {
 public:
+    NOCOPYABLE_BODY(Timer)
+
     Timer() {
-        // UINT32_MAX 表示永远阻塞
+        // UINT32_MAX means block forever
         tp_ = system_clock::now() + milliseconds(UINT32_MAX);
 
         thr_ = std::thread([&] {
             while (running_) {
-                // 阻塞直到到达 timer 是规定的时间
                 do {
                     std::unique_lock<std::mutex> lock(mtx_);
                     cv_.wait_until(lock, tp_);
                 } while (running_ && system_clock::now() < tp_);
-                // 执行回调函数
+
                 if (callback_) {
                     callback_();
                 }
@@ -36,67 +113,58 @@ public:
         thr_.join();
     }
 
-    // 设置回调函数和回调时间
     void set(const std::function<void()> &callback, uint32_t tp) {
+        /**
+         * 设置回调函数和回调时间
+         * 设置完成后通过信号量唤醒回调线程以应用新的超时时间
+         */
+
         std::lock_guard<std::mutex> lock(mtx_);
-        // 设置新变量
         callback_ = callback;
         tp_ = system_clock::now() + milliseconds(tp);
-        // 唤醒，如果新设置的 tp 小于旧的 tp，则需要唤醒重新设置
         cv_.notify_one();
     }
 
-    // 设置回调的时间
     void set(uint32_t tp) { set(callback_, tp); }
 
     static std::unique_ptr<Timer> create(const std::function<void()> &callback,
         uint32_t tp) {
-        return std::make_unique<Timer>(callback, tp);
+        return std::unique_ptr<Timer>(new Timer(callback, tp));
     }
 
 private:
-    // 互斥量
     std::mutex mtx_ = {};
-    // 超时时间和回调函数
+    std::condition_variable cv_ = {};
     time_point<system_clock> tp_;
     std::function<void()> callback_ = {};
-    // 用以执行回调的线程
     std::thread thr_ = {};
-    // 工作状态
     std::atomic<bool> running_ = { true };
-    // 信号量，用以唤醒回调线程
-    std::condition_variable cv_ = {};
 };
 
-struct Message {
-    // 消息通信描述符
-    int fd = -1;
-    // 消息类型
-    String op;
-    // 消息参数
-    Json params;
-};
-
-// 消息队列
+/**
+ * 消息队列
+ */
 template<typename _Ty>
 class BlockQueue {
 public:
-    // 消息入队列
+    NOCOPYABLE_BODY(BlockQueue)
+
+    BlockQueue() = default;
+    ~BlockQueue() = default;
+
     void enqueue(const _Ty &message) {
         {
             std::lock_guard<std::mutex> lock(mtx_);
             messages_.push(message);
         }
-        // 唤醒 dequeue 线程
-        dequeue_cv_.notify_one();
+        cv_.notify_one();
     }
 
-    // 从消息队列中获取一个消息，如果消息队列中不存在消息，将会阻塞知道有可用消息
     _Ty dequeue() {
         std::unique_lock<std::mutex> lock(mtx_);
 
         if (messages_.empty()) {
-            dequeue_cv_.wait(lock, [&] { return !messages_.empty(); });
+            cv_.wait(lock, [&] { return !messages_.empty(); });
         }
 
         const auto message = messages_.front();
@@ -105,19 +173,17 @@ public:
     }
 
 private:
-    // 互斥量，用以避免同时访问 messages_
     std::mutex mtx_ = {};
-    // 消息
     std::queue<_Ty> messages_ = {};
-    // 用来阻塞 dequeue 的条件变量
-    std::condition_variable dequeue_cv_ = {};
+    std::condition_variable cv_ = {};
 };
 
 class ThreadPool {
 public:
-    // 启动线程池
+    NOCOPYABLE_BODY(ThreadPool)
+
     ThreadPool() {
-        for (auto &thr : thrs_) {
+        for (auto &thr : threads_) {
             thr = std::thread([&] {
                 while (true) {
                     const auto func = queue_.dequeue();
@@ -131,17 +197,15 @@ public:
         }
     }
 
-    // 退出线程池
     ~ThreadPool() {
-        for (auto &thr : thrs_) {
+        for (auto &thr : threads_) {
             queue_.enqueue({});
         }
-        for (auto &thr : thrs_) {
+        for (auto &thr : threads_) {
             thr.join();
         }
     }
 
-    // 执行
     void execute(const std::function<void()> &func) { queue_.enqueue(func); }
 
     static ThreadPool *get() {
@@ -151,32 +215,7 @@ public:
 
 private:
     BlockQueue<std::function<void()>> queue_;
-    std::array<std::thread, 5> thrs_ = {};
+    std::array<std::thread, 5> threads_ = {};
 };
 
-// RPC 消息定义
-// vote operation
-struct Vote {
-    uint32_t term;
-    static String request(uint32_t term) {
-        Json obj = {
-            { "op", "vote" },
-            { "params", { { "term", term } } },
-        };
-        return obj.dump();
-    }
-    static String response(uint32_t count) {
-        Json obj = {
-            { "ticket", count },
-        };
-        return obj.dump();
-    }
-};
-
-
-String recv(int fd);
-void send(int fd, const String &buf);
-void send(int fd, const Json &obj);
-// 发送请求并等待响应
-String send_request(uint16_t port, const String &request);
 #endif

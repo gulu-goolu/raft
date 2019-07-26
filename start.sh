@@ -4,7 +4,7 @@
 mkdir -p db
 
 # 启动子进程
-for ((i = 1; i <= 5; i++))
+for ((i = 1; i <= 3; i++))
 do (
     ./raft-node
 )

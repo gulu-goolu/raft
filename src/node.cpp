@@ -9,173 +9,75 @@ Node::~Node() {
     }
 }
 
-void Node::user() {
-    int user_fd = -1;
+void Node::listen_user_port() {
+    uint32_t retry = 1;
+    Ptr<TcpListener> listener;
+    do {
+        std::this_thread::sleep_for(milliseconds(retry));
+        retry *= 2;
+        listener = TcpListener::bind("127.0.0.1", config_.user_port);
+    } while (listener == nullptr);
 
-    assert((user_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) != -1);
-
-    sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(config_.user_port);
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-
-    // 尝试绑定端口，以 1 2 4 8 16 为时间间隔重试
-    uint32_t retry_milliseconds = 1;
-    while (bind(user_fd, (struct sockaddr *)(&addr), sizeof(addr)) != 0) {
-        std::this_thread::sleep_for(milliseconds(retry_milliseconds));
-        retry_milliseconds *= 2;
-    }
-
-    listen(user_fd);
-
-    close(user_fd);
+    listen(listener);
 }
 
 void Node::message_loop() {
+    //
     while (running_) {
         const auto msg = message_queue_.dequeue();
-        printf("%d recv fd:%d op: %s, params: %s\n",
+        printf("%d recv op: %s, params: %s\n",
             id_,
-            msg.fd,
             msg.op.c_str(),
             msg.params.dump().c_str());
 
         if (msg.op == "timeout") {
-            // 开始选举
-            term_++;
-            ticket_count_ = 1;
-            type_ = NodeType::Candidate;
-            // 向所有节点发送选举命令
-            for (auto &node : config_.nodes) {
-                if (node != id_) {
-                    Json req = {
-                        { "op", "vote" },
-                        { "params", { { "term", term_ } } },
-                    };
-                    ThreadPool::get()->execute([=] {
-                        const auto buf = send_request(node, req.dump());
-                        if (!buf.empty()) {
-                            const auto rep = Json::parse(buf);
-                            Message msg = {};
-                            msg.op = "ticket";
-                            msg.params = {
-                                { "count", rep.at("count").get<uint32_t>() },
-                                { "term", rep.at("term").get<uint32_t>() },
-                            };
-                            message_queue_.enqueue(msg);
-                        }
-                    });
-                }
-            }
-        } else if (msg.op == "ticket") {
-            if (type_ != NodeType::Candidate) {
-                continue;
-            }
-            // 收到来自其他节点的投票
-            uint32_t term = msg.params.at("term").get<uint32_t>();
-            uint32_t count = msg.params.at("count").get<uint32_t>();
-            if (term == term_) {
-                ticket_count_ += count;
-            }
-            if (ticket_count_ > (config_.nodes.size() + 1) / 2) {
-                // 已获得大多数节点的投票
-                // 停止选举超时
-                type_ = NodeType::Leader;
-                printf("%d is leader\n", id_);
-
-                // 切换成主节点，启动用户线程，开始向其他节点发送心跳
-                vote_timer_->set(UINT32_MAX);
-                user_thr_ = std::thread(&Node::user, this);
-                heart_timer_ = Timer::create(
-                    std::bind(&Node::heart, this), config_.heart_period);
-            }
+            on_timeout_command(msg.stream, msg.params);
+        } else if (msg.op == "ballot") {
+            on_ballot_command(msg.stream, msg.params);
         } else if (msg.op == "vote") {
-            if (type_ != NodeType::Follower) {
-                continue;
-            }
-            // 收到来自其他节点的投票请求
-            uint32_t term = msg.params.at("term").get<uint32_t>();
-            uint32_t count = 0;
-            if (term_ < term) {
-                // 重设选举超时定时器
-                term_ = term;
-                count = 1;
-                vote_timer_->set(config_.timeout.rand());
-            }
-            // 返回 term 和票数
-            ThreadPool::get()->execute([=] {
-                send(msg.fd,
-                    {
-                        { "term", term },
-                        { "count", count },
-                    });
-            });
+            on_vote_command(msg.stream, msg.params);
         } else if (msg.op == "heart") {
-            // 收到心跳包
-            uint32_t term = msg.params.at("term").get<uint32_t>();
-            if (term_ <= term) {
-                // 收到心跳包
-                type_ = NodeType::Follower;
-                term_ = term;
-                vote_timer_->set(config_.timeout.rand());
-            }
-            // 返回 {} 对象
-            ThreadPool::get()->execute([=] { send(msg.fd, Json({})); });
+            on_heart_command(msg.stream, msg.params);
         } else if (msg.op == "log") {
-            // 日志复制
         } else if (msg.op == "echo") {
-            // 打印进程 id 和 term
-            ThreadPool::get()->execute([=] {
-                send(msg.fd,
-                    {
-                        { "id", id_ },
-                        { "term", term_ },
-                    });
-            });
+            on_echo_command(msg.stream, msg.params);
         } else if (msg.op == "set") {
-            // 设置 key value
-            const auto key = msg.params.at("key").get<std::string>();
-            const auto val = msg.params.at("value").get<String>();
-            pairs_[key] = val;
-            ThreadPool::get()->execute([=] { send(msg.fd, { { key, val } }); });
+            on_set_command(msg.stream, msg.params);
         } else if (msg.op == "get") {
             const auto key = msg.params.at("key").get<std::string>();
             const auto it = pairs_.find(key);
             if (it == pairs_.end()) {
                 ThreadPool::get()->execute([=] {
-                    send(msg.fd, { { key, nullptr } });
+                    msg.stream->send({ { key, nullptr } });
                 });
             } else {
-                String value = it->second;
+                const String value = it->second;
                 ThreadPool::get()->execute([=] {
-                    send(msg.fd, { { key, value } });
+                    msg.stream->send({ { key, value } });
                 });
             }
-        } else if (msg.op == "kill") {
+        } else if (msg.op == "append") {
+            on_append_command(msg.stream, msg.params);
         } else if (msg.op == "exit") {
-            // 退出线程
             return;
         } else {
         }
     }
 }
 
-void Node::vote() {
-    // 发送超时消息
+void Node::vote_tick() {
     Message msg = {};
     msg.op = "timeout";
     msg.params = {};
     message_queue_.enqueue(msg);
 
-    // 重设
-    vote_timer_->set(1500 + rand() % 1500);
+    // reset vote timer
+    vote_timer_->set(config_.timeout.rand());
 }
 
-void Node::heart() {
-    // 必须是 leader 节点才能发送消息
+void Node::heart_tick() {
     assert(type_ == NodeType::Leader);
 
-    // 向所有的节点发送心跳包
     for (const auto &node : config_.nodes) {
         if (node != id_) {
             ThreadPool::get()->execute([=] {
@@ -183,61 +85,47 @@ void Node::heart() {
                     { "op", "heart" },
                     { "params", { { "term", term_ } } },
                 };
-                send_request(node, obj.dump());
+                TcpSession::request(node, obj);
             });
         }
     }
-    // 设置下一次心跳时间
     heart_timer_->set(config_.heart_period);
 }
 
 void Node::run(const Config &config) {
-    int fd = -1;
-    assert((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) != -1);
-
-    // 绑定端口，端口号将作为节点的 id
-    for (size_t i = 0; i < config.nodes.size(); ++i) {
-        sockaddr_in addr = {};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(config.nodes[i]);
-        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-        if (bind(fd, (struct sockaddr *)(&addr), sizeof(addr)) == 0) {
-            id_ = config.nodes[i];
+    Ptr<TcpListener> listener;
+    for (auto node : config.nodes) {
+        listener = TcpListener::bind("127.0.0.1", node);
+        if (listener) {
+            id_ = node;
+            printf("bind succeed\n");
             break;
         }
     }
-    // 绑定失败，直接返回
-    if (id_ == 0) {
+    if (listener == nullptr) {
         return;
     }
 
-    // 设置初始参数
     config_ = config;
     type_ = NodeType::Follower;
     running_ = true;
-    // 从 db 恢复数据
-    //  load();
 
-    // 初始化监听线程，选举线程
-    srand(id_);
-    listen_thr_ = std::thread(std::bind(&Node::listen, this, fd));
-    const auto vote_func = std::bind(&Node::vote, this);
+    // load();
+    system_clock::now().time_since_epoch().count();
+    srand(static_cast<uint32_t>(time(nullptr)));
+    listen_thr_ = std::thread(std::bind(&Node::listen, this, listener));
+    const auto vote_func = std::bind(&Node::vote_tick, this);
     vote_timer_ = Timer::create(vote_func, config.timeout.rand());
-    // 进入消息循环
+
     message_loop();
 
-    // 保存数据
-    // 关闭套接字
-    close(fd);
     dump();
 }
 
 void Node::load() {
-    // 计算路径
     String db = "db/";
     String path = db + std::to_string(id_) + ".json";
 
-    // 读取文件
     String buf = read_file(path.c_str());
     if (buf.empty()) {
         buf = "{}";
@@ -252,7 +140,6 @@ void Node::load() {
 }
 
 void Node::dump() {
-    // 计算路径
     String db = "db/";
     String path = db + std::to_string(id_) + ".json";
 
@@ -262,39 +149,201 @@ void Node::dump() {
     write_file(path, obj.dump());
 }
 
-void Node::listen(int fd) {
-    // 监听端口
-    // 并将从端口获取的数据写入消息队列
-    int ret = 0;
-    if ((ret = ::listen(fd, 10)) == -1) {
-        char msg[1024] = {};
-        sprintf(msg, "listen(fd:%d) => ret: %d", fd, ret);
-        perror(msg);
-    }
-    // 命令处理主循环
+void Node::listen(Ptr<TcpListener> listener) {
     while (running_) {
-        int conn_fd = -1;
-        if ((conn_fd = accept(fd, nullptr, nullptr)) == -1) {
-            char msg[1024] = {};
-            sprintf(msg, "accept failed");
-            perror(msg);
-            // 如果套接字已关闭，或者其他情形，直接返回
-            return;
+        const auto stream = listener->accept();
+        if (stream == nullptr) {
+            break;
         }
-
-        const auto buf = recv_all(conn_fd);
-        printf("%s\n", buf.c_str());
+        const auto buf = stream->recv();
         if (!buf.empty()) {
-            // 读取 op params，然后放入消息队列
             const auto req = Json::parse(buf);
             Message msg = {};
-            msg.fd = conn_fd;
+            msg.stream = std::move(stream);
             msg.op = req.at("op").get<std::string>();
             msg.params = req.at("params");
             message_queue_.enqueue(msg);
         } else {
-            // 如果请求中无任何内容，返回一个 {} 对象
-            send(conn_fd, String("{}"));
+            stream->send({
+                { "receiver", id_ },
+            });
         }
     }
+}
+
+void Node::on_timeout_command(Ptr<TcpStream> stream, const Json &params) {
+    term_++;
+    ticket_count_ = 1;
+    type_ = NodeType::Candidate;
+    for (auto &node : config_.nodes) {
+        if (node != id_) {
+            ThreadPool::get()->execute([=] {
+                Json req = {
+                    { "op", "vote" },
+                    { "params",
+                        {
+                            { "term", term_ },
+                            { "sender", id_ },
+                        } },
+                };
+                const auto buf = TcpSession::request(node, req);
+
+                if (!buf.empty()) {
+                    const auto rep = Json::parse(buf);
+                    Message msg = {};
+                    msg.op = "ballot";
+                    msg.params = {
+                        { "sender", id_ },
+                        { "count", rep.at("count").get<uint32_t>() },
+                        { "term", rep.at("term").get<uint32_t>() },
+                    };
+                    message_queue_.enqueue(msg);
+                }
+            });
+        }
+    }
+}
+
+void Node::on_ballot_command(Ptr<TcpStream> stream, const Json &params) {
+    if (type_ != NodeType::Candidate) {
+        return;
+    }
+    uint32_t term = params.at("term").get<uint32_t>();
+    uint32_t count = params.at("count").get<uint32_t>();
+    if (term == term_) {
+        ticket_count_ += count;
+    }
+    if (ticket_count_ > (config_.nodes.size() + 1) / 2) {
+        type_ = NodeType::Leader;
+        printf("%d is leader\n", id_);
+
+        vote_timer_->set(UINT32_MAX);
+        user_thr_ = std::thread(&Node::listen_user_port, this);
+        heart_timer_ = Timer::create(
+            std::bind(&Node::heart_tick, this), config_.heart_period);
+    }
+}
+
+void Node::on_heart_command(Ptr<TcpStream> stream, const Json &params) {
+    const uint32_t term = params.at("term").get<uint32_t>();
+    if (term_ <= term) {
+        if (type_ == NodeType::Leader) {
+            // TODO
+        }
+        type_ = NodeType::Follower;
+        term_ = term;
+        vote_timer_->set(config_.timeout.rand());
+    }
+
+    ThreadPool::get()->execute([=] {
+        stream->send({
+            { "receiver", id_ },
+        });
+    });
+}
+
+void Node::on_vote_command(Ptr<TcpStream> stream, const Json &params) {
+    //
+
+    if (type_ != NodeType::Follower) {
+        return;
+    }
+    uint32_t term = params.at("term").get<uint32_t>();
+    uint32_t count = 0;
+    if (term_ < term) {
+        term_ = term;
+        count = 1;
+        vote_timer_->set(config_.timeout.rand());
+    }
+    ThreadPool::get()->execute([=] {
+        stream->send({
+            { "receiver", id_ },
+            { "term", term },
+            { "count", count },
+        });
+    });
+}
+
+void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
+    //
+
+    ThreadPool::get()->execute([=] {
+        stream->send({
+            { "receiver", id_ },
+            { "count", 1 },
+        });
+    });
+}
+
+void Node::on_set_command(Ptr<TcpStream> stream, const Json &params) {
+    //
+
+    const uint32_t index = commit_index_++;
+    const auto key = params.at("key").get<std::string>();
+    const auto val = params.at("value").get<String>();
+    pairs_[key] = val;
+    ThreadPool::get()->execute([=] {
+        BlockQueue<uint32_t> results;
+        for (const auto &node : config_.nodes) {
+            if (node != id_) {
+                ThreadPool::get()->execute([&] {
+                    // avoid reference of node
+                    const uint32_t _node = node;
+                    append(term_, index, _node, "set", params, results);
+                });
+            }
+        }
+
+        uint32_t total = 1;
+        for (size_t i = 1; i < config_.nodes.size(); ++i) {
+            total += results.dequeue();
+
+            if (total >= (config_.nodes.size() + 1) / 2) {
+                printf("commit now\n");
+            }
+        }
+
+        stream->send({
+            { key, val },
+        });
+    });
+}
+
+void Node::on_echo_command(Ptr<TcpStream> stream, const Json &params) {
+    ThreadPool::get()->execute([=] {
+        stream->send({
+            { "id", id_ },
+            { "term", term_ },
+        });
+    });
+}
+
+void Node::append(uint32_t term,
+    uint32_t index,
+    uint16_t node,
+    const String &op,
+    const Json &params,
+    BlockQueue<uint32_t> &results) {
+    const Json obj = {
+        { "op", "append" },
+        {
+            "params",
+            {
+                { "op", op },
+                { "params", params },
+                { "term", term },
+                { "index", index },
+            },
+        },
+    };
+    const auto buf = TcpSession::request(node, obj);
+    uint32_t count = 0;
+    if (!buf.empty()) {
+        const auto obj = Json::parse(buf);
+        if (obj.contains("count")) {
+            count += obj.at("count").get<uint32_t>();
+        }
+    }
+
+    results.enqueue(count);
 }

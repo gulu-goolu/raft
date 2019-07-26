@@ -1,6 +1,45 @@
 # raft
 
-C++ 实现 Raft 共识算法
+## Overview
+
+C++ 实现 Raft 共识算法，本项目包括两部分：
+
+- C++ 编写的 Raft 实现
+- Python 编写的命令行工具
+
+### Requirements:
+
+- CMake 3.13
+- Python 3.7
+- Clang 7.0 or visual studio 2015
+- Git 2.21
+
+### Build
+
+```cpp
+git clone --recursive https://github.com/murmur-wheel/raft.git
+mkdir raft-build && cd raft-build
+cmake ../raft
+```
+
+然后用 Visual Studio 打开 raft.sln 生成项目/ Linux 平台直接执行 build 命令
+
+### Usage
+
+```bash
+python3 cli.py start # 启动集群
+python3 cli.py set key1 value1 # 设置 key 的值为 valu1
+python3 cli.py get key1 # 获取 key 的值
+python3 cli.py echo  # 打印 leader 信息
+python3 cli.py stop  # 关闭集群
+```
+
+### Items
+
+- **src** 项目源码
+- **cli.py** 命令行客户端
+- **CMakeLists.txt** 构建脚本
+- **3rdparty** 第三方库
 
 ## 一、Raft
 
@@ -13,21 +52,16 @@ C++ 实现 Raft 共识算法
 - **线程池** 用于处理耗时的 IO 流程
 - **定时器** 实现心跳，选举中的定时回调功能
 
-### 1.2 选主流程
+### 1.2 选主
 
 选主的流程：
 
 ![flow](/images/flow.png)
 
 
-### 1.3 用户命令执行流程
+### 1.3 日志复制
 
-流程如下：
-
-1. leader 收到用户请求后启动一个新线程执行日志复制命令
-3. 当大多数节点已将日志写入磁盘后，向消息队列发送一个 op 指令
-4. leader 执行操作
-5. leader 启动一个线程将操作的结果返回
+用户命令分两阶段执行：
 
 ### 1.4 集群配置变更流程
 
@@ -89,10 +123,9 @@ C++ 实现 Raft 共识算法
   - **heart** 更新 **term**
   - **vote** 选举
 - **leader**
-   - **user** 处理用户命令
+  - **user** 处理用户命令
 
-
-## 三、其他
+## 四、其他
 
 ### **1.处理网络异常**
 
