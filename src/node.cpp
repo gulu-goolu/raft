@@ -34,7 +34,7 @@ void Node::listen_user_port() {
 
 void Node::listen(Ptr<TcpListener> listener) {
     /**
-     * 监听端口，并将端口从获取的请求转发到 MessageQueue 中
+     * 监听端口，并将从端口获取的请求转发到 MessageQueue 中
      */
 
     while (running_) {
@@ -82,6 +82,9 @@ void Node::heart_tick() {
             });
         }
     }
+    /**
+     * 从新设置心跳超时时间
+     */
     heart_timer_->set(config_.heart_period);
 }
 
@@ -111,6 +114,9 @@ void Node::run(const Config &config) {
     listen_thr_ = std::thread(std::bind(&Node::listen, this, listener));
     vote_timer_ = Timer::create([this] { vote_tick(); }, config.timeout.rand());
 
+    /**
+     * 消息循环
+     */
     message_loop();
 
     flush();
@@ -134,6 +140,9 @@ void Node::load() {
 }
 
 void Node::flush() {
+    /**
+     * 将内存中的任期，日志等信息刷入磁盘
+     */
     String db = "db/";
     String path = db + std::to_string(id_) + ".json";
 
@@ -163,7 +172,9 @@ void Node::message_loop() {
             id_,
             msg.op.c_str(),
             msg.params.dump().c_str());
-
+        /**
+         * 根据 op 来调用对应的处理函数
+         */
         if (msg.op == "timeout") {
             on_timeout_command(msg.stream, msg.params);
         } else if (msg.op == "ballot") {
@@ -191,11 +202,17 @@ void Node::message_loop() {
 }
 
 void Node::on_timeout_command(Ptr<TcpStream> stream, const Json &params) {
+    /**
+     * 选举定时器超时，向集群中的各个节点发出选举请求
+     */
     term_++;
     ticket_count_ = 1;
     type_ = NodeType::Candidate;
     for (auto &node : config_.nodes) {
         if (node != id_) {
+            /**
+             * 在子线程中发出请求
+             */
             ThreadPool::get()->execute([=] {
                 Json req = {
                     { "op", "vote" },
@@ -224,6 +241,9 @@ void Node::on_timeout_command(Ptr<TcpStream> stream, const Json &params) {
 }
 
 void Node::on_ballot_command(Ptr<TcpStream> stream, const Json &params) {
+    /**
+     * 处理投票指令，在一个 term 内获得超过半数投票的 candicate 将会成为 leader
+     */
     if (type_ != NodeType::Candidate) {
         return;
     }
@@ -245,19 +265,29 @@ void Node::on_ballot_command(Ptr<TcpStream> stream, const Json &params) {
 
 void Node::on_commit_command(const Ptr<TcpStream> stream, const Json &params) {
     /**
-     * 在日志状态机中执行
+     * 在日志状态机中执行操作
      */
     const auto key = params.at("key").get<std::string>();
     const auto value = params.at("value").get<String>();
     pairs_[key] = value;
-    ThreadPool::get()->execute([=] { stream->send({ { key, value } }); });
+    ThreadPool::get()->execute([=] {
+        /**
+         * 向用户返回操作结果
+         */
+        stream->send({ { key, value } });
+    });
 }
 
 void Node::on_heart_command(Ptr<TcpStream> stream, const Json &params) {
+    /**
+     * 收到来自 leader 的心跳指令，这个指令会重置 follower 的选举定时器
+     */
     const uint32_t term = params.at("term").get<uint32_t>();
     if (term_ <= term) {
         if (type_ == NodeType::Leader) {
-            // TODO
+            /**
+             * 此节点是旧的 leader
+             */
         }
         type_ = NodeType::Follower;
         term_ = term;
@@ -298,7 +328,7 @@ void Node::on_vote_command(Ptr<TcpStream> stream, const Json &params) {
 void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
     /**
      * 处理来自 leader 的 append 指令
-     * 将日志追加到
+     * 检查 leader 和本节点的日志差异
      */
     const uint32_t index = params.at("index").get<uint32_t>();
 
@@ -340,7 +370,7 @@ void Node::on_set_command(Ptr<TcpStream> stream, const Json &params) {
 
     ThreadPool::get()->execute([=] {
         /**
-         * 这里使用消息队列 appends 来接收命令提交的结果
+         * 消息队列 appends 用于接收各个节点日志复制的结果
          */
         const auto appends = BlockQueue<uint32_t>::create();
         for (const auto &node : config_.nodes) {
@@ -359,7 +389,7 @@ void Node::on_set_command(Ptr<TcpStream> stream, const Json &params) {
             }
         }
         /**
-         * 大多数节点已完成 append 指令，在 leader 的状态机中执行
+         * 当大多数节点完成日志复制指令，将日志应用到 leader 的状态机中
          */
         Message msg = {};
         msg.stream = stream;
