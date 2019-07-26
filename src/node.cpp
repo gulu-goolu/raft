@@ -2,6 +2,13 @@
 
 #include "node.h"
 
+Node::Node() {
+    /**
+     * 初始化消息队列
+     */
+    msg_queue_ = BlockQueue<Message>::create();
+}
+
 Node::~Node() {
     running_ = false;
     if (type_ == NodeType::Leader) {
@@ -10,6 +17,10 @@ Node::~Node() {
 }
 
 void Node::listen_user_port() {
+    /**
+     * 监听用户命令
+     * 如果监听失败，会执行重试操作
+     */
     uint32_t retry = 1;
     Ptr<TcpListener> listener;
     do {
@@ -21,46 +32,28 @@ void Node::listen_user_port() {
     listen(listener);
 }
 
-void Node::message_loop() {
-    //
-    while (running_) {
-        const auto msg = message_queue_.dequeue();
-        printf("%d recv op: %s, params: %s\n",
-            id_,
-            msg.op.c_str(),
-            msg.params.dump().c_str());
+void Node::listen(Ptr<TcpListener> listener) {
+    /**
+     * 监听端口，并将端口从获取的请求转发到 MessageQueue 中
+     */
 
-        if (msg.op == "timeout") {
-            on_timeout_command(msg.stream, msg.params);
-        } else if (msg.op == "ballot") {
-            on_ballot_command(msg.stream, msg.params);
-        } else if (msg.op == "vote") {
-            on_vote_command(msg.stream, msg.params);
-        } else if (msg.op == "heart") {
-            on_heart_command(msg.stream, msg.params);
-        } else if (msg.op == "log") {
-        } else if (msg.op == "echo") {
-            on_echo_command(msg.stream, msg.params);
-        } else if (msg.op == "set") {
-            on_set_command(msg.stream, msg.params);
-        } else if (msg.op == "get") {
-            const auto key = msg.params.at("key").get<std::string>();
-            const auto it = pairs_.find(key);
-            if (it == pairs_.end()) {
-                ThreadPool::get()->execute([=] {
-                    msg.stream->send({ { key, nullptr } });
-                });
-            } else {
-                const String value = it->second;
-                ThreadPool::get()->execute([=] {
-                    msg.stream->send({ { key, value } });
-                });
-            }
-        } else if (msg.op == "append") {
-            on_append_command(msg.stream, msg.params);
-        } else if (msg.op == "exit") {
-            return;
+    while (running_) {
+        const auto stream = listener->accept();
+        if (stream == nullptr) {
+            break;
+        }
+        const auto buf = stream->recv();
+        if (!buf.empty()) {
+            const auto req = Json::parse(buf);
+            Message msg = {};
+            msg.stream = std::move(stream);
+            msg.op = req.at("op").get<std::string>();
+            msg.params = req.at("params");
+            msg_queue_->enqueue(msg);
         } else {
+            stream->send({
+                { "receiver", id_ },
+            });
         }
     }
 }
@@ -69,7 +62,7 @@ void Node::vote_tick() {
     Message msg = {};
     msg.op = "timeout";
     msg.params = {};
-    message_queue_.enqueue(msg);
+    msg_queue_->enqueue(msg);
 
     // reset vote timer
     vote_timer_->set(config_.timeout.rand());
@@ -111,15 +104,16 @@ void Node::run(const Config &config) {
     running_ = true;
 
     // load();
-    system_clock::now().time_since_epoch().count();
-    srand(static_cast<uint32_t>(time(nullptr)));
+    /**
+     * 监听端口，启动选举定时器，设置随机数种子（避免多个节点同时开始选举）
+     */
+    srand(static_cast<uint32_t>(time(nullptr)) * id_);
     listen_thr_ = std::thread(std::bind(&Node::listen, this, listener));
-    const auto vote_func = std::bind(&Node::vote_tick, this);
-    vote_timer_ = Timer::create(vote_func, config.timeout.rand());
+    vote_timer_ = Timer::create([this] { vote_tick(); }, config.timeout.rand());
 
     message_loop();
 
-    dump();
+    flush();
 }
 
 void Node::load() {
@@ -139,34 +133,59 @@ void Node::load() {
     }
 }
 
-void Node::dump() {
+void Node::flush() {
     String db = "db/";
     String path = db + std::to_string(id_) + ".json";
 
+    Json logs;
+    for (const auto &log : logs_) {
+        logs.push_back({
+            {
+                std::to_string(log.first),
+                { { "term", log.second.term }, { "info", log.second.info } },
+            },
+        });
+    }
     Json obj = {
         { "term", term_ },
+        { "logs", logs },
     };
     write_file(path, obj.dump());
 }
 
-void Node::listen(Ptr<TcpListener> listener) {
+void Node::message_loop() {
+    /**
+     * 消息循环
+     */
     while (running_) {
-        const auto stream = listener->accept();
-        if (stream == nullptr) {
-            break;
-        }
-        const auto buf = stream->recv();
-        if (!buf.empty()) {
-            const auto req = Json::parse(buf);
-            Message msg = {};
-            msg.stream = std::move(stream);
-            msg.op = req.at("op").get<std::string>();
-            msg.params = req.at("params");
-            message_queue_.enqueue(msg);
+        const auto msg = msg_queue_->dequeue();
+        printf("%d recv op: %s, params: %s\n",
+            id_,
+            msg.op.c_str(),
+            msg.params.dump().c_str());
+
+        if (msg.op == "timeout") {
+            on_timeout_command(msg.stream, msg.params);
+        } else if (msg.op == "ballot") {
+            on_ballot_command(msg.stream, msg.params);
+        } else if (msg.op == "vote") {
+            on_vote_command(msg.stream, msg.params);
+        } else if (msg.op == "heart") {
+            on_heart_command(msg.stream, msg.params);
+        } else if (msg.op == "log") {
+        } else if (msg.op == "echo") {
+            on_echo_command(msg.stream, msg.params);
+        } else if (msg.op == "set") {
+            on_set_command(msg.stream, msg.params);
+        } else if (msg.op == "get") {
+            on_get_command(msg.stream, msg.params);
+        } else if (msg.op == "append") {
+            on_append_command(msg.stream, msg.params);
+        } else if (msg.op == "commit") {
+            on_commit_command(msg.stream, msg.params);
+        } else if (msg.op == "exit") {
+            return;
         } else {
-            stream->send({
-                { "receiver", id_ },
-            });
         }
     }
 }
@@ -197,7 +216,7 @@ void Node::on_timeout_command(Ptr<TcpStream> stream, const Json &params) {
                         { "count", rep.at("count").get<uint32_t>() },
                         { "term", rep.at("term").get<uint32_t>() },
                     };
-                    message_queue_.enqueue(msg);
+                    msg_queue_->enqueue(msg);
                 }
             });
         }
@@ -224,6 +243,16 @@ void Node::on_ballot_command(Ptr<TcpStream> stream, const Json &params) {
     }
 }
 
+void Node::on_commit_command(const Ptr<TcpStream> stream, const Json &params) {
+    /**
+     * 在日志状态机中执行
+     */
+    const auto key = params.at("key").get<std::string>();
+    const auto value = params.at("value").get<String>();
+    pairs_[key] = value;
+    ThreadPool::get()->execute([=] { stream->send({ { key, value } }); });
+}
+
 void Node::on_heart_command(Ptr<TcpStream> stream, const Json &params) {
     const uint32_t term = params.at("term").get<uint32_t>();
     if (term_ <= term) {
@@ -243,12 +272,14 @@ void Node::on_heart_command(Ptr<TcpStream> stream, const Json &params) {
 }
 
 void Node::on_vote_command(Ptr<TcpStream> stream, const Json &params) {
-    //
+    /**
+     * 处理来自集群中其他 candidate 节点的选举指令
+     */
 
     if (type_ != NodeType::Follower) {
         return;
     }
-    uint32_t term = params.at("term").get<uint32_t>();
+    const uint32_t term = params.at("term").get<uint32_t>();
     uint32_t count = 0;
     if (term_ < term) {
         term_ = term;
@@ -265,7 +296,21 @@ void Node::on_vote_command(Ptr<TcpStream> stream, const Json &params) {
 }
 
 void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
-    //
+    /**
+     * 处理来自 leader 的 append 指令
+     * 将日志追加到
+     */
+    const uint32_t index = params.at("index").get<uint32_t>();
+
+    Log log = {};
+    log.term = params.at("term").get<uint32_t>();
+    log.info = params.at("info");
+    logs_[index] = log;
+
+    /**
+     * 将日志写入磁盘
+     */
+    flush();
 
     ThreadPool::get()->execute([=] {
         stream->send({
@@ -276,40 +321,73 @@ void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
 }
 
 void Node::on_set_command(Ptr<TcpStream> stream, const Json &params) {
-    //
+    /**
+     * 处理用户的 set 指令，由两部分组成：
+     * 1. 向集群中的 follower 节点提交日志
+     * 2. 在 leader 节点中执行操作，将操作结果返给用户
+     */
 
     const uint32_t index = commit_index_++;
-    const auto key = params.at("key").get<std::string>();
-    const auto val = params.at("value").get<String>();
-    pairs_[key] = val;
+
+    /**
+     * 追加日志到 leader 的状态机中，随后将日志写入磁盘
+     */
+    Log log = {};
+    log.term = term_;
+    log.info = { { "op", "get" }, { "params", params } };
+    logs_[index] = log;
+    flush();
+
     ThreadPool::get()->execute([=] {
-        BlockQueue<uint32_t> results;
+        /**
+         * 这里使用消息队列 appends 来接收命令提交的结果
+         */
+        const auto appends = BlockQueue<uint32_t>::create();
         for (const auto &node : config_.nodes) {
             if (node != id_) {
-                ThreadPool::get()->execute([&] {
-                    // avoid reference of node
-                    const uint32_t _node = node;
-                    append(term_, index, _node, "set", params, results);
+                ThreadPool::get()->execute([=] {
+                    append(term_, index, node, "set", params, appends);
                 });
             }
         }
 
         uint32_t total = 1;
         for (size_t i = 1; i < config_.nodes.size(); ++i) {
-            total += results.dequeue();
-
+            total += appends->dequeue();
             if (total >= (config_.nodes.size() + 1) / 2) {
-                printf("commit now\n");
+                break;
             }
         }
-
-        stream->send({
-            { key, val },
-        });
+        /**
+         * 大多数节点已完成 append 指令，在 leader 的状态机中执行
+         */
+        Message msg = {};
+        msg.stream = stream;
+        msg.op = "commit";
+        msg.params = params;
+        msg_queue_->enqueue(msg);
     });
 }
 
+void Node::on_get_command(Ptr<TcpStream> stream, const Json &params) {
+    /**
+     * 处理用户的 get 指令，查找 key 对应的 value，如果不存在，返回 null
+     */
+
+    const auto key = params.at("key").get<std::string>();
+    const auto it = pairs_.find(key);
+    if (it == pairs_.end()) {
+        ThreadPool::get()->execute([=] { stream->send({ { key, nullptr } }); });
+    } else {
+        const String value = it->second;
+        ThreadPool::get()->execute([=] { stream->send({ { key, value } }); });
+    }
+}
+
 void Node::on_echo_command(Ptr<TcpStream> stream, const Json &params) {
+    /**
+     * 打印 leader 的 id 和 term
+     */
     ThreadPool::get()->execute([=] {
         stream->send({
             { "id", id_ },
@@ -323,16 +401,20 @@ void Node::append(uint32_t term,
     uint16_t node,
     const String &op,
     const Json &params,
-    BlockQueue<uint32_t> &results) {
+    Ptr<BlockQueue<uint32_t>> results) {
+    /**
+     * 向集群中的其他节点发送 append 指令
+     * 发送结果存入消息对列 results 中
+     */
+
     const Json obj = {
         { "op", "append" },
         {
             "params",
             {
-                { "op", op },
-                { "params", params },
                 { "term", term },
                 { "index", index },
+                { "info", { { "op", op }, { "params", params } } },
             },
         },
     };
@@ -345,5 +427,5 @@ void Node::append(uint32_t term,
         }
     }
 
-    results.enqueue(count);
+    results->enqueue(count);
 }

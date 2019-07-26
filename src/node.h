@@ -17,9 +17,12 @@ struct Message {
     Json params;
 };
 
-struct Entity {
+struct Log {
+    /**
+     * 任期和日志信息
+     */
     uint32_t term;
-    uint32_t index;
+    Json info;
 };
 
 /**
@@ -27,22 +30,25 @@ struct Entity {
  */
 class Node {
 public:
-    Node() = default;
+    NOCOPYABLE_BODY(Node)
+
+    Node();
     ~Node();
     void listen_user_port();
-    void message_loop();
+    void listen(Ptr<TcpListener> listener);
     void vote_tick();
     void heart_tick();
     void run(const Config &config);
     void load();
-    void dump();
-    void listen(Ptr<TcpListener> listener);
+    void flush();
 
+    void message_loop();
     /**
      * 节点内部回调
      */
     void on_timeout_command(Ptr<TcpStream> stream, const Json &params);
     void on_ballot_command(Ptr<TcpStream> stream, const Json &params);
+    void on_commit_command(const Ptr<TcpStream> stream, const Json &params);
 
     /**
      * 集群内部命令回调
@@ -55,6 +61,7 @@ public:
      * 用户命令回调
      */
     void on_set_command(Ptr<TcpStream> stream, const Json &params);
+    void on_get_command(Ptr<TcpStream> stream, const Json &params);
     void on_echo_command(Ptr<TcpStream> stream, const Json &params);
 
     static void append(uint32_t term,
@@ -62,22 +69,37 @@ public:
         uint16_t node,
         const String &op,
         const Json &params,
-        BlockQueue<uint32_t> &results);
+        Ptr<BlockQueue<uint32_t>> results);
 
 private:
-    uint16_t id_ = 0;
+    /**
+     * 运行状态，节点 id 和节点类型
+     */
     std::atomic<bool> running_ = { true };
+    Config config_ = {};
+    uint16_t id_ = 0;
     NodeType type_ = NodeType::Follower;
+    /**
+     * 任期和当前任期获得的选票数目
+     */
     uint32_t term_ = 0;
     uint32_t ticket_count_ = 0;
+
+    /**
+     * 定时器和后台监听线程，以及后台线程和主线程通信的消息队列
+     */
     std::unique_ptr<Timer> vote_timer_;
     std::unique_ptr<Timer> heart_timer_;
     std::thread user_thr_ = {};
     std::thread listen_thr_ = {};
-    Config config_ = {};
-    HashMap<String, String> pairs_;
-    BlockQueue<Message> message_queue_;
+    Ptr<BlockQueue<Message>> msg_queue_;
+
+    /**
+     * 日志索引和状态机（这是使用了一个 HashMap 来做状态机）
+     */
     uint32_t commit_index_ = 0;
+    HashMap<String, String> pairs_;
+    HashMap<uint32_t, Log> logs_ = {};
 };
 
 #endif

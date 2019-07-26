@@ -85,7 +85,7 @@ public:
     NOCOPYABLE_BODY(Timer)
 
     Timer() {
-        // UINT32_MAX means block forever
+        // UINT32_MAX 表示一个永不可达的时间
         tp_ = system_clock::now() + milliseconds(UINT32_MAX);
 
         thr_ = std::thread([&] {
@@ -145,7 +145,7 @@ private:
  * 消息队列
  */
 template<typename _Ty>
-class BlockQueue {
+class BlockQueue : public RefCounted {
 public:
     NOCOPYABLE_BODY(BlockQueue)
 
@@ -153,6 +153,9 @@ public:
     ~BlockQueue() = default;
 
     void enqueue(const _Ty &message) {
+        /**
+         * 消息入队列
+         */
         {
             std::lock_guard<std::mutex> lock(mtx_);
             messages_.push(message);
@@ -161,6 +164,9 @@ public:
     }
 
     _Ty dequeue() {
+        /**
+         * 消息出队，如果队列中不存在任何消息，将会阻塞直到有消息可供处理为止
+         */
         std::unique_lock<std::mutex> lock(mtx_);
 
         if (messages_.empty()) {
@@ -172,12 +178,24 @@ public:
         return message;
     }
 
+    /**
+     * 创建消息队列
+     */
+    static Ptr<BlockQueue<_Ty>> create() {
+        return Ptr<BlockQueue<_Ty>>::from(new BlockQueue<_Ty>());
+    }
+
 private:
     std::mutex mtx_ = {};
     std::queue<_Ty> messages_ = {};
     std::condition_variable cv_ = {};
 };
 
+/**
+ * 线程池有两部分组成：
+ *   1. 执行任务的后台线程
+ *   2. 管理任务的消息队列
+ */
 class ThreadPool {
 public:
     NOCOPYABLE_BODY(ThreadPool)
@@ -185,6 +203,9 @@ public:
     ThreadPool() {
         for (auto &thr : threads_) {
             thr = std::thread([&] {
+                /**
+                 * 执行任务的线程
+                 */
                 while (true) {
                     const auto func = queue_.dequeue();
                     if (func) {
@@ -206,7 +227,12 @@ public:
         }
     }
 
-    void execute(const std::function<void()> &func) { queue_.enqueue(func); }
+    void execute(const std::function<void()> &func) {
+        /**
+         * 将任务放入消息队列中，放入队列中任务将会被后台线程执行
+         */
+        queue_.enqueue(func);
+    }
 
     static ThreadPool *get() {
         static ThreadPool thr_pool;

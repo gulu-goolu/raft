@@ -37,6 +37,10 @@ using Json = nlohmann::json;
 template<typename _Kty, typename _Ty>
 using HashMap = std::unordered_map<_Kty, _Ty>;
 
+
+/**
+ * 配置选项
+ */
 struct Config {
     Vector<uint16_t> nodes;
     uint16_t user_port;
