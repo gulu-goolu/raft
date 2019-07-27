@@ -10,6 +10,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     add_definitions(-D_UNICODE)
     SET(RAFT_LIBRARIES ws2_32)
     set(LAUNCH_SCRIPT start.bat)
+    set(EXECUTABLE_OUTPUT_PATH  ${CMAKE_BINARY_DIR})
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     # Linux 平台编译选项
     SET(RAFT_LIBRARIES pthread)
@@ -24,4 +25,5 @@ target_link_libraries(raft-node ${RAFT_LIBRARIES})
 
 # 复制脚本到编译输出文件夹下
 add_custom_command(TARGET raft-node
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/start.sh ${CMAKE_BINARY_DIR}/${LAUNCH_SCRIPT})
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/start.sh ${CMAKE_BINARY_DIR}/${LAUNCH_SCRIPT}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/storage)

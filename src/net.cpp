@@ -15,8 +15,22 @@ void init_socket() {
         started = true;
     }
 }
+void print_error(const char *err_msg) {
+    char msg[1024] = {};
+    FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr,
+        GetLastError(),
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        msg,
+        (sizeof(msg) / sizeof(char)),
+        nullptr);
+    fprintf(stderr, "%s:%s", err_msg, msg);
+}
 #else
 void init_socket() {}
+void print_error(const char *err_msg) {
+    perror(err_msg);
+}
 #endif
 
 TcpStream::~TcpStream() {
@@ -29,7 +43,7 @@ void TcpStream::send(const String &buf) const {
     if (::send(fd_, buf.data(), static_cast<int>(buf.size()), 0) == -1) {
         char msg[1024] = {};
         snprintf(msg, 1024, "send %s failed", buf.c_str());
-        perror(msg);
+        print_error(msg);
     }
 }
 
@@ -69,7 +83,7 @@ Ptr<TcpStream> TcpStream::connect(const char *ip, uint16_t port) {
         if ((ret = inet_pton(AF_INET, ip, &address.sin_addr)) == -1) {
             char msg[1024] = {};
             snprintf(msg, sizeof(msg), "%s/%d", ip, port);
-            perror(msg);
+			print_error(msg);
             break;
         }
 
@@ -120,7 +134,7 @@ Ptr<TcpListener> TcpListener::bind(const char *ip, uint16_t port) {
         if ((ret = inet_pton(AF_INET, ip, &address.sin_addr)) == -1) {
             char msg[1024] = {};
             snprintf(msg, sizeof(msg), "%s/%d", ip, port);
-            perror(msg);
+			print_error(msg);
             break;
         }
 
@@ -129,14 +143,14 @@ Ptr<TcpListener> TcpListener::bind(const char *ip, uint16_t port) {
                 sizeof(address)) == -1) {
             char msg[1024] = {};
             snprintf(msg, sizeof(msg), "bind %s/%d failed", ip, port);
-            perror(msg);
+			print_error(msg);
             break;
         }
 
         if (listen(fd, 10) == -1) {
             char msg[1024] = {};
             snprintf(msg, sizeof(msg), "listen  %s/%d failed", ip, port);
-            perror(msg);
+			print_error(msg);
             break;
         }
 
