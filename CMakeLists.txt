@@ -9,10 +9,12 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup")
     add_definitions(-D_UNICODE)
     SET(RAFT_LIBRARIES ws2_32)
+    set(LAUNCH_SCRIPT start.bat)
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     # Linux 平台编译选项
     SET(RAFT_LIBRARIES pthread)
     add_definitions(-g)
+    set(START_SCRIPT start.sh)
 endif()
 
 file(GLOB SRCS src/*.h src/*.cpp)
@@ -21,5 +23,5 @@ target_include_directories(raft-node PRIVATE ${CMAKE_SOURCE_DIR}/3rdparty/json/s
 target_link_libraries(raft-node ${RAFT_LIBRARIES})
 
 # 复制脚本到编译输出文件夹下
-# add_custom_command(TARGET raft-node
-#    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/start.sh ${CMAKE_BINARY_DIR}/start.sh)
+add_custom_command(TARGET raft-node
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/start.sh ${CMAKE_BINARY_DIR}/${LAUNCH_SCRIPT})

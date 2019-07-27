@@ -27,11 +27,10 @@ cmake ../raft
 ### Usage
 
 ```bash
-python3 cli.py start # 启动集群
+./start.sh # 启动集群
 python3 cli.py set key1 value1 # 设置 key 的值为 valu1
 python3 cli.py get key1 # 获取 key 的值
 python3 cli.py echo  # 打印 leader 信息
-python3 cli.py stop  # 关闭集群
 ```
 
 ### Items
@@ -60,6 +59,7 @@ python3 cli.py stop  # 关闭集群
 2. 所有节点都绑定在 `127.0.0.1` 这个 IP 上，同时规定所绑定的端口号就是节点的 id（不用进程号作为节点 id 是因为在进程重启前后的进程号是不同的）
 3. 只有 leader 节点才允许监听 1024 端口（这个端口专门用来接收用户命令）
 4. 节点之间通过 json 进行通信
+5. 日志索引从 0 开始，且是单调递增的
 
 ### 1.2 选主
 
@@ -137,13 +137,24 @@ python3 cli.py stop  # 关闭集群
 - **leader**
   - **user** 处理用户命令
 
+
+## 三、测试
+
+测试样例是以 XML 格式定义的
+
 ## 四、其他
 
-### **1.处理网络异常**
+### RAII 和引用计数
+
+实现中的套接字和对象都是我们要管理的资源
+
+### FAQ
+
+#### **1.处理网络异常**
 
 - 超时
 - connection refused
 
-### **2.长连接？短连接？**
+#### **2.长连接？短连接？**
 
 为了降低实现的难度，在实现 Raft 算法的过程中，我们使用短连接，即在会话结束后，就立即销毁连接。

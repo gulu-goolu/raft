@@ -39,7 +39,7 @@ public:
     void vote_tick();
     void heart_tick();
     void run(const Config &config);
-    void load();
+    void recover();
     void flush();
 
     void message_loop();
@@ -48,7 +48,8 @@ public:
      */
     void on_timeout_command(Ptr<TcpStream> stream, const Json &params);
     void on_ballot_command(Ptr<TcpStream> stream, const Json &params);
-    void on_commit_command(const Ptr<TcpStream> stream, const Json &params);
+    void on_commit_command(Ptr<TcpStream> stream, const Json &params);
+    void on_rollback_command(Ptr<TcpStream> stream, const Json &params);
 
     /**
      * 集群内部命令回调
@@ -64,12 +65,12 @@ public:
     void on_get_command(Ptr<TcpStream> stream, const Json &params);
     void on_echo_command(Ptr<TcpStream> stream, const Json &params);
 
-    static void append(uint32_t term,
+    void append(uint32_t term,
         uint32_t index,
         uint16_t node,
         const String &op,
         const Json &params,
-        Ptr<BlockQueue<uint32_t>> results);
+        Ptr<ConcurrentQueue<uint32_t>> results);
 
 private:
     /**
@@ -86,20 +87,20 @@ private:
     uint32_t ticket_count_ = 0;
 
     /**
-     * 定时器和后台监听线程，以及后台线程和主线程通信的消息队列
+     * 定时器和监听子线程，以及消息队列
      */
     std::unique_ptr<Timer> vote_timer_;
     std::unique_ptr<Timer> heart_timer_;
-    std::thread user_thr_ = {};
+    std::thread user_thread_ = {};
     std::thread listen_thr_ = {};
-    Ptr<BlockQueue<Message>> msg_queue_;
+    Ptr<ConcurrentQueue<Message>> msg_queue_;
 
     /**
-     * 日志索引和状态机（这是使用了一个 HashMap 来做状态机）
+     * 日志索引和状态机（这里的状态机是一个 HashMap）
      */
-    uint32_t commit_index_ = 0;
+    uint32_t log_index_ = 0;
     HashMap<String, String> pairs_;
-    HashMap<uint32_t, Log> logs_ = {};
+    Vector<Log> logs_ = {};
 };
 
 #endif

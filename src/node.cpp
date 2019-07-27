@@ -6,13 +6,13 @@ Node::Node() {
     /**
      * 初始化消息队列
      */
-    msg_queue_ = BlockQueue<Message>::create();
+    msg_queue_ = ConcurrentQueue<Message>::create();
 }
 
 Node::~Node() {
     running_ = false;
     if (type_ == NodeType::Leader) {
-        user_thr_.join();
+        user_thread_.join();
     }
 }
 
@@ -83,7 +83,7 @@ void Node::heart_tick() {
         }
     }
     /**
-     * 从新设置心跳超时时间
+     * 重置心跳超时时间
      */
     heart_timer_->set(config_.heart_period);
 }
@@ -106,7 +106,11 @@ void Node::run(const Config &config) {
     type_ = NodeType::Follower;
     running_ = true;
 
-    // load();
+    /**
+     * 从磁盘恢复数据
+     */
+    recover();
+
     /**
      * 监听端口，启动选举定时器，设置随机数种子（避免多个节点同时开始选举）
      */
@@ -118,24 +122,36 @@ void Node::run(const Config &config) {
      * 消息循环
      */
     message_loop();
-
-    flush();
 }
 
-void Node::load() {
-    String db = "db/";
+void Node::recover() {
+    /**
+     * 从文件恢复当前节点的状态
+     */
+    String db = "storage/";
     String path = db + std::to_string(id_) + ".json";
 
     String buf = read_file(path.c_str());
     if (buf.empty()) {
-        buf = "{}";
+        return;
     }
+
+    term_ = 0;
+    log_index_ = 0;
 
     const auto data = Json::parse(buf);
     if (data.contains("term")) {
         term_ = data["term"].get<uint32_t>();
-    } else {
-        term_ = 0;
+    }
+    if (data.contains("logs")) {
+        for (auto &log : data.at("logs")) {
+            logs_.push_back({
+                log.at("term").get<uint32_t>(),
+                log.at("info"),
+            });
+        }
+
+        log_index_ = static_cast<uint32_t>(logs_.size());
     }
 }
 
@@ -143,17 +159,12 @@ void Node::flush() {
     /**
      * 将内存中的任期，日志等信息刷入磁盘
      */
-    String db = "db/";
+    String db = "storage/";
     String path = db + std::to_string(id_) + ".json";
 
     Json logs;
     for (const auto &log : logs_) {
-        logs.push_back({
-            {
-                std::to_string(log.first),
-                { { "term", log.second.term }, { "info", log.second.info } },
-            },
-        });
+        logs.push_back({ { "term", log.term }, { "info", log.info } });
     }
     Json obj = {
         { "term", term_ },
@@ -163,6 +174,19 @@ void Node::flush() {
 }
 
 void Node::message_loop() {
+    typedef void (Node::*Handler)(Ptr<TcpStream>, const Json &);
+    HashMap<String, Handler> handlers = {
+        { "timeout", &Node::on_timeout_command },
+        { "ballot", &Node::on_ballot_command },
+        { "vote", &Node::on_vote_command },
+        { "echo", &Node::on_echo_command },
+        { "set", &Node::on_set_command },
+        { "get", &Node::on_get_command },
+        { "append", &Node::on_append_command },
+        { "commit", &Node::on_commit_command },
+        { "rollback", &Node::on_rollback_command },
+        { "heart", &Node::on_heart_command },
+    };
     /**
      * 消息循环
      */
@@ -175,28 +199,11 @@ void Node::message_loop() {
         /**
          * 根据 op 来调用对应的处理函数
          */
-        if (msg.op == "timeout") {
-            on_timeout_command(msg.stream, msg.params);
-        } else if (msg.op == "ballot") {
-            on_ballot_command(msg.stream, msg.params);
-        } else if (msg.op == "vote") {
-            on_vote_command(msg.stream, msg.params);
-        } else if (msg.op == "heart") {
-            on_heart_command(msg.stream, msg.params);
-        } else if (msg.op == "log") {
-        } else if (msg.op == "echo") {
-            on_echo_command(msg.stream, msg.params);
-        } else if (msg.op == "set") {
-            on_set_command(msg.stream, msg.params);
-        } else if (msg.op == "get") {
-            on_get_command(msg.stream, msg.params);
-        } else if (msg.op == "append") {
-            on_append_command(msg.stream, msg.params);
-        } else if (msg.op == "commit") {
-            on_commit_command(msg.stream, msg.params);
-        } else if (msg.op == "exit") {
-            return;
+        auto it = handlers.find(msg.op);
+        if (it != handlers.end()) {
+            (this->*it->second)(msg.stream, msg.params);
         } else {
+            printf("undefined command\n");
         }
     }
 }
@@ -220,6 +227,7 @@ void Node::on_timeout_command(Ptr<TcpStream> stream, const Json &params) {
                         {
                             { "term", term_ },
                             { "sender", id_ },
+                            { "log_index", log_index_ },
                         } },
                 };
                 const auto buf = TcpSession::request(node, req);
@@ -257,13 +265,13 @@ void Node::on_ballot_command(Ptr<TcpStream> stream, const Json &params) {
         printf("%d is leader\n", id_);
 
         vote_timer_->set(UINT32_MAX);
-        user_thr_ = std::thread(&Node::listen_user_port, this);
+        user_thread_ = std::thread(&Node::listen_user_port, this);
         heart_timer_ = Timer::create(
             std::bind(&Node::heart_tick, this), config_.heart_period);
     }
 }
 
-void Node::on_commit_command(const Ptr<TcpStream> stream, const Json &params) {
+void Node::on_commit_command(Ptr<TcpStream> stream, const Json &params) {
     /**
      * 在日志状态机中执行操作
      */
@@ -276,6 +284,12 @@ void Node::on_commit_command(const Ptr<TcpStream> stream, const Json &params) {
          */
         stream->send({ { key, value } });
     });
+}
+
+void Node::on_rollback_command(Ptr<TcpStream> stream, const Json &params) {
+    /**
+     * append 失败，重新发送 append 命令
+     */
 }
 
 void Node::on_heart_command(Ptr<TcpStream> stream, const Json &params) {
@@ -310,8 +324,9 @@ void Node::on_vote_command(Ptr<TcpStream> stream, const Json &params) {
         return;
     }
     const uint32_t term = params.at("term").get<uint32_t>();
+    const uint32_t log_index = params.at("log_index").get<uint32_t>();
     uint32_t count = 0;
-    if (term_ < term) {
+    if (term_ < term && log_index_ <= log_index) {
         term_ = term;
         count = 1;
         vote_timer_->set(config_.timeout.rand());
@@ -327,25 +342,30 @@ void Node::on_vote_command(Ptr<TcpStream> stream, const Json &params) {
 
 void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
     /**
-     * 处理来自 leader 的 append 指令
-     * 检查 leader 和本节点的日志差异
+     * 处理来自 leader 的 append 指令，并返回当前节点的 log_next_index
+     *
      */
     const uint32_t index = params.at("index").get<uint32_t>();
-
-    Log log = {};
-    log.term = params.at("term").get<uint32_t>();
-    log.info = params.at("info");
-    logs_[index] = log;
+    uint32_t current_index = log_index_;
+    if (log_index_ == index) {
+        Log log = {};
+        log.term = params.at("term").get<uint32_t>();
+        log.info = params.at("info");
+        logs_.push_back(log);
+    }
 
     /**
      * 将日志写入磁盘
      */
     flush();
 
+    /**
+     * 返回本节点的日志索引
+     */
     ThreadPool::get()->execute([=] {
         stream->send({
             { "receiver", id_ },
-            { "count", 1 },
+            { "index", current_index },
         });
     });
 }
@@ -357,22 +377,24 @@ void Node::on_set_command(Ptr<TcpStream> stream, const Json &params) {
      * 2. 在 leader 节点中执行操作，将操作结果返给用户
      */
 
-    const uint32_t index = commit_index_++;
+    const uint32_t index = log_index_++;
 
     /**
-     * 追加日志到 leader 的状态机中，随后将日志写入磁盘
+     * 提交日志，随后将日志写入磁盘
      */
     Log log = {};
     log.term = term_;
-    log.info = { { "op", "get" }, { "params", params } };
-    logs_[index] = log;
+    log.info = { { "op", "set" }, { "params", params } };
+    logs_.push_back(log);
+
     flush();
 
     ThreadPool::get()->execute([=] {
         /**
          * 消息队列 appends 用于接收各个节点日志复制的结果
          */
-        const auto appends = BlockQueue<uint32_t>::create();
+        const auto appends = ConcurrentQueue<uint32_t>::create();
+
         for (const auto &node : config_.nodes) {
             if (node != id_) {
                 ThreadPool::get()->execute([=] {
@@ -431,10 +453,9 @@ void Node::append(uint32_t term,
     uint16_t node,
     const String &op,
     const Json &params,
-    Ptr<BlockQueue<uint32_t>> results) {
+    Ptr<ConcurrentQueue<uint32_t>> results) {
     /**
      * 向集群中的其他节点发送 append 指令
-     * 发送结果存入消息对列 results 中
      */
 
     const Json obj = {
@@ -449,13 +470,26 @@ void Node::append(uint32_t term,
         },
     };
     const auto buf = TcpSession::request(node, obj);
-    uint32_t count = 0;
+    /**
+     * 处理 follower 对 append 指令的回复
+     * 通过判断返回的 index 是否一致来判断 follower 执行 append 指令是否成功
+     * 如果 append 成功，就将 1 放入 results，
+     * 如果 append 失败，将 0 放入 results 当中，append
+     * 失败后，另开一个子线程来处理失败的情形
+     */
     if (!buf.empty()) {
         const auto obj = Json::parse(buf);
-        if (obj.contains("count")) {
-            count += obj.at("count").get<uint32_t>();
+        if (obj.contains("index")) {
+            const uint32_t follow_index = obj.at("index").get<uint32_t>();
+            if (follow_index == index) {
+                results->enqueue(1);
+            } else {
+                results->enqueue(0);
+                Message msg = {};
+                msg.op = "rollback";
+                msg.params = { { "index", index } };
+                msg_queue_->enqueue(msg);
+            }
         }
     }
-
-    results->enqueue(count);
 }

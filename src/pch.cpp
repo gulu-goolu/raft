@@ -5,13 +5,13 @@ String read_file(const char *path) {
 #ifdef _WIN32
     if (fopen_s(&fp, path, "r") && !fp) {
         // file not exists
-        return String();
+        return "";
     }
 #else
     fp = fopen(path, "r");
     if (!fp) {
         perror("open file failed!");
-        throw std::logic_error("open file failed");
+        return "";
     }
 #endif
     fseek(fp, 0, SEEK_END);

@@ -145,12 +145,12 @@ private:
  * 消息队列
  */
 template<typename _Ty>
-class BlockQueue : public RefCounted {
+class ConcurrentQueue : public RefCounted {
 public:
-    NOCOPYABLE_BODY(BlockQueue)
+    NOCOPYABLE_BODY(ConcurrentQueue)
 
-    BlockQueue() = default;
-    ~BlockQueue() = default;
+    ConcurrentQueue() = default;
+    ~ConcurrentQueue() = default;
 
     void enqueue(const _Ty &message) {
         /**
@@ -181,8 +181,8 @@ public:
     /**
      * 创建消息队列
      */
-    static Ptr<BlockQueue<_Ty>> create() {
-        return Ptr<BlockQueue<_Ty>>::from(new BlockQueue<_Ty>());
+    static Ptr<ConcurrentQueue<_Ty>> create() {
+        return Ptr<ConcurrentQueue<_Ty>>::from(new ConcurrentQueue<_Ty>());
     }
 
 private:
@@ -194,7 +194,7 @@ private:
 /**
  * 线程池有两部分组成：
  *   1. 执行任务的后台线程
- *   2. 管理任务的消息队列
+ *   2. 任务队列
  */
 class ThreadPool {
 public:
@@ -240,7 +240,7 @@ public:
     }
 
 private:
-    BlockQueue<std::function<void()>> queue_;
+    ConcurrentQueue<std::function<void()>> queue_;
     std::array<std::thread, 5> threads_ = {};
 };
 
