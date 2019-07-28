@@ -499,8 +499,10 @@ void Node::apply_log(const Json &info) {
     const auto &params = info.at("params");
     /* 应用操作日志 */
     if (op == "set") {
-        pairs_[params.at("key").get<std::string>()] =
-            params.at("value").get<std::string>();
+        /* 设置 key - value */
+        const auto key = params.at("key").get<std::string>();
+        const auto value = params.at("value").get<std::string>();
+        pairs_[key] = value;
     }
     last_applied_++;
 }
