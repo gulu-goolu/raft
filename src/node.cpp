@@ -20,10 +20,12 @@ void Node::listen_user_port() {
      * 如果监听失败，会执行重试操作
      */
     Ptr<TcpListener> listener;
-
+    
+    /* 绑定 1024 端口，绑定操作会以 0.2*2^n 的间隔重试，n = 1, 2, 3 ... */
+    /* 这样做可以避免 TIME_WAIT 而导致绑定失败 */
     uint32_t retry = 1;
     while (!(listener = TcpListener::bind("127.0.0.1", config_.user_port))) {
-        std::this_thread::sleep_for(milliseconds(retry));
+        std::this_thread::sleep_for(milliseconds(retry * 200));
         retry *= 2;
     };
 
@@ -47,6 +49,16 @@ void Node::listen(Ptr<TcpListener> listener) {
             msg.stream = std::move(stream);
             msg.op = req.at("op").get<std::string>();
             msg.params = req.at("params");
+            
+            /* shutdown 关闭对此端口的绑定 */
+            if (msg.op == "shutdown") {
+                /* 校验发送者的 id，避免误操作 */
+                if (params.at("id") == id_) {
+                    return;
+                }
+            }
+            
+            /* 将消息送入消息队列 */
             msg_queue_->enqueue(msg);
         } else {
             stream->send({
@@ -62,7 +74,7 @@ void Node::vote_tick() {
     msg.params = {};
     msg_queue_->enqueue(msg);
 
-    // reset vote timer
+    /* 重置选举定时器 */
     vote_timer_->set(config_.timeout.rand());
 }
 
@@ -71,9 +83,8 @@ void Node::heart_tick() {
     msg.op = "heartbeat";
     msg.params = {};
     msg_queue_->enqueue(msg);
-    /**
-     * 重置心跳超时时间
-     */
+    
+    /* 重置心跳定时器 */
     heart_timer_->set(config_.heartbeat_period);
 }
 
@@ -108,7 +119,7 @@ void Node::run(const Config &config) {
 
 void Node::recover_from_disk() {
     /**
-     * 从文件恢复当前节点的状态
+     * 从磁盘恢复数据
      */
     String db = "storage/";
     String path = db + std::to_string(id_) + ".json";
@@ -134,8 +145,8 @@ void Node::recover_from_disk() {
     if (data.contains("commit_index")) {
         commit_index_ = data.at("commit_index").get<int32_t>();
     }
+    
     /* 执行日志 */
-    last_applied_ = -1;
     for (const auto &log : logs_) {
         apply_log(log.info);
     }
@@ -143,7 +154,7 @@ void Node::recover_from_disk() {
 
 void Node::flush_to_disk() {
     /**
-     * 将内存中的任期，日志等信息刷入磁盘
+     * 将内存中的数据存入磁盘
      */
     String db = "storage/";
     String path = db + std::to_string(id_) + ".json";
@@ -166,6 +177,9 @@ void Node::flush_to_disk() {
 }
 
 void Node::message_loop() {
+    /**
+     * 消息循环
+     */
     typedef void (Node::*Handler)(Ptr<TcpStream>, const Json &);
     HashMap<String, Handler> handlers = {
         { "timeout", &Node::on_timeout_command },
@@ -179,20 +193,15 @@ void Node::message_loop() {
         { "apply", &Node::on_apply_command },
         { "rollback", &Node::on_rollback_command },
     };
-    /**
-     * 消息循环
-     */
     while (running_) {
         const auto msg = msg_queue_->dequeue();
-        /*
+        
         printf("%d recv op: %s, params: %s\n",
             id_,
             msg.op.c_str(),
             msg.params.dump().c_str());
-         */
-        /**
-         * 根据 op 来调用对应的处理函数
-         */
+        
+        /* 根据 op 来调用对应的处理函数 */
         auto it = handlers.find(msg.op);
         if (it != handlers.end()) {
             (this->*it->second)(msg.stream, msg.params);
@@ -210,15 +219,15 @@ void Node::on_timeout_command(Ptr<TcpStream> stream, const Json &params) {
     current_term_++;
     voted_for_ = id_;
 
-    /**
-     * 在子线程中执行投票请求
-     */
+    /* 在子线程中向集群的其他节点发送选举请求 */
+    uint32_t _last_log_index = last_log_index();
+    uint32_t _last_log_term = last_log_term();
     ThreadPool::get()->execute([=] {
         /**
          * 构造选举参数
          */
         const auto args = VoteRequest::Arguments(
-            current_term_, id_, last_log_index(), last_log_term());
+            current_term_, id_, _last_log_index, _last_log_term);
         Json req = {
             { "op", "vote" },
             { "params", args.to_json() },
@@ -271,9 +280,7 @@ void Node::on_apply_command(Ptr<TcpStream> stream, const Json &params) {
     apply_log(params);
 
     ThreadPool::get()->execute([=] {
-        /**
-         * 向用户返回操作结果
-         */
+        /* 返回操作结果 */
         stream->send({ { "success", true } });
     });
 }
@@ -298,6 +305,9 @@ void Node::on_heartbeat_command(Ptr<TcpStream> stream, const Json &params) {
                     { "params", args.to_json() },
                 };
                 const auto buf = TcpSession::request(node, obj);
+                if (!buf.empty()) {
+                    /* 比较任期 */
+                }
             });
         }
     }
@@ -305,7 +315,7 @@ void Node::on_heartbeat_command(Ptr<TcpStream> stream, const Json &params) {
 
 void Node::on_elected_command(Ptr<TcpStream> stream, const Json &params) {
     /**
-     * 当选主节点，停止 vote timer
+     * 当选主节点，停止 vote timer，并在子线程中监听 user_port，开始定期发送心跳
      */
     printf("%d is leader\n", id_);
     vote_timer_->set(UINT32_MAX);
@@ -373,7 +383,7 @@ void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
             logs_.push_back(t);
         }
 
-        /* 更新 commit_index 和 last_applied index */
+        /* 更新 commit_index*/
         commit_index_ = last_log_index();
 
         /* 将日志写入磁盘 */
