@@ -74,7 +74,7 @@ void Node::heart_tick() {
     /**
      * 重置心跳超时时间
      */
-    heart_timer_->set(config_.heart_period);
+    heart_timer_->set(config_.heartbeat_period);
 }
 
 void Node::run(const Config &config) {
@@ -94,25 +94,19 @@ void Node::run(const Config &config) {
     config_ = config;
     running_ = true;
 
-    /**
-     * 从磁盘恢复数据
-     */
-    recover();
+    /* 从磁盘恢复数据 */
+    recover_from_disk();
 
-    /**
-     * 监听端口，启动选举定时器，设置随机数种子（避免多个节点同时开始选举）
-     */
+    /* 监听端口，启动选举定时器，设置随机数种子 */
     srand(static_cast<uint32_t>(time(nullptr)) * id_);
-    listen_thr_ = std::thread(std::bind(&Node::listen, this, listener));
+    listen_thr_ = std::thread([=] { listen(listener); });
     vote_timer_ = Timer::create([this] { vote_tick(); }, config.timeout.rand());
 
-    /**
-     * 消息循环
-     */
+    /* 进入消息循环 */
     message_loop();
 }
 
-void Node::recover() {
+void Node::recover_from_disk() {
     /**
      * 从文件恢复当前节点的状态
      */
@@ -124,7 +118,9 @@ void Node::recover() {
         return;
     }
 
-    current_term_ = 0;
+    current_term_ = -1;
+    commit_index_ = -1;
+    last_applied_ = -1;
 
     const auto data = Json::parse(buf);
     if (data.contains("current_term")) {
@@ -132,28 +128,39 @@ void Node::recover() {
     }
     if (data.contains("logs")) {
         for (auto &log : data.at("logs")) {
-            logs_.push_back({
-                log.at("term").get<uint32_t>(),
-                log.at("info"),
-            });
+            logs_.push_back(Log(log));
         }
+    }
+    if (data.contains("commit_index")) {
+        commit_index_ = data.at("commit_index").get<int32_t>();
+    }
+    /* 执行日志 */
+    last_applied_ = -1;
+    for (const auto &log : logs_) {
+        apply_log(log.info);
     }
 }
 
-void Node::flush() {
+void Node::flush_to_disk() {
     /**
      * 将内存中的任期，日志等信息刷入磁盘
      */
     String db = "storage/";
     String path = db + std::to_string(id_) + ".json";
 
-    Json logs;
+    Json logs = Json::array({});
     for (const auto &log : logs_) {
         logs.push_back({ { "term", log.term }, { "info", log.info } });
     }
+    Json pairs = Json::array({});
+    for (const auto &pair : pairs_) {
+        pairs.push_back({ pair.first, pair.second });
+    }
     Json obj = {
         { "current_term", current_term_ },
+        { "commit_index", commit_index_ },
         { "logs", logs },
+        { "pairs", pairs },
     };
     write_file(path, obj.dump());
 }
@@ -169,7 +176,7 @@ void Node::message_loop() {
         { "set", &Node::on_set_command },
         { "get", &Node::on_get_command },
         { "append", &Node::on_append_command },
-        { "commit", &Node::on_commit_command },
+        { "apply", &Node::on_apply_command },
         { "rollback", &Node::on_rollback_command },
     };
     /**
@@ -177,10 +184,12 @@ void Node::message_loop() {
      */
     while (running_) {
         const auto msg = msg_queue_->dequeue();
+        /*
         printf("%d recv op: %s, params: %s\n",
             id_,
             msg.op.c_str(),
             msg.params.dump().c_str());
+         */
         /**
          * 根据 op 来调用对应的处理函数
          */
@@ -208,7 +217,7 @@ void Node::on_timeout_command(Ptr<TcpStream> stream, const Json &params) {
         /**
          * 构造选举参数
          */
-        const auto args = VoteRequest::Params(
+        const auto args = VoteRequest::Arguments(
             current_term_, id_, last_log_index(), last_log_term());
         Json req = {
             { "op", "vote" },
@@ -255,18 +264,17 @@ void Node::on_timeout_command(Ptr<TcpStream> stream, const Json &params) {
     });
 }
 
-void Node::on_commit_command(Ptr<TcpStream> stream, const Json &params) {
+void Node::on_apply_command(Ptr<TcpStream> stream, const Json &params) {
     /**
-     * 在日志状态机中执行操作
+     * 在状态机上应用日志
      */
-    const auto key = params.at("key").get<std::string>();
-    const auto value = params.at("value").get<String>();
-    pairs_[key] = value;
+    apply_log(params);
+
     ThreadPool::get()->execute([=] {
         /**
          * 向用户返回操作结果
          */
-        stream->send({ { key, value } });
+        stream->send({ { "success", true } });
     });
 }
 
@@ -283,13 +291,13 @@ void Node::on_heartbeat_command(Ptr<TcpStream> stream, const Json &params) {
     for (const auto &node : config_.nodes) {
         if (node != id_) {
             ThreadPool::get()->execute([=] {
-                const auto args =
-                    AppendRequest::Params(current_term_, id_, 0, 0, {}, 0);
+                const auto args = AppendRequest::Arguments(
+                    current_term_, id_, -1, -1, {}, -1);
                 const Json obj = {
                     { "op", "append" },
                     { "params", args.to_json() },
                 };
-                TcpSession::request(node, obj);
+                const auto buf = TcpSession::request(node, obj);
             });
         }
     }
@@ -297,24 +305,28 @@ void Node::on_heartbeat_command(Ptr<TcpStream> stream, const Json &params) {
 
 void Node::on_elected_command(Ptr<TcpStream> stream, const Json &params) {
     /**
-     * 停止 vote timer
+     * 当选主节点，停止 vote timer
      */
     printf("%d is leader\n", id_);
     vote_timer_->set(UINT32_MAX);
     user_thread_ = std::thread([=] { listen_user_port(); });
-    heart_timer_ = Timer::create([=] { heart_tick(); }, config_.heart_period);
+    heart_timer_ =
+        Timer::create([=] { heart_tick(); }, config_.heartbeat_period);
 }
 
 void Node::on_vote_command(Ptr<TcpStream> stream, const Json &params) {
     /**
      * 处理来自集群中其他 candidate 节点的选举指令
      * 投票的条件：
-     *  1. candidate 的任期
+     *  1. candidate 必须拥有全部的数据
      * 若决定投票给 candidate 后，会重置 timer
      */
-    auto args = VoteRequest::Params(params);
+    auto args = VoteRequest::Arguments(params);
     VoteRequest::Results results(current_term_, false);
-    if (args.term > current_term_) {
+
+    /* 只有拥有最新日志的 candidate 才有资格获得选票 */
+    if (args.term > current_term_ && args.last_log_index >= last_log_index() &&
+        args.last_log_term >= last_log_term()) {
         /**
          * 投票给 candidate
          * 根据请求设置 term 和 vote timer
@@ -335,26 +347,42 @@ void Node::on_vote_command(Ptr<TcpStream> stream, const Json &params) {
 
 void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
     /**
-     * 处理来自 leader 的 append 指令，并返回当前节点的 log_next_index
-     * 1. 重置 vote timer
+     * 处理来自 leader 的 append 指令
      */
-    const auto args = AppendRequest::Params(params);
-    VoteRequest::Results results(current_term_, false);
+    const auto args = AppendRequest::Arguments(params);
+    AppendRequest::Results results(current_term_, false);
     if (current_term_ <= args.term) {
+        /* 重置 vote timer 更新 term */
         vote_timer_->set(config_.timeout.rand());
         current_term_ = args.term;
+
+        results.term = current_term_;
     }
 
+    /* 追加日志 */
     int32_t current_index = last_log_index();
-    if (false) {
-        Log log = {};
-        log.term = params.at("term").get<uint32_t>();
-        log.info = params.at("info");
-        logs_.push_back(log);
+    if (!args.entries.empty() &&
+        term_of_log(args.prev_log_index) == args.prev_log_term) {
         /**
-         * 将日志写入磁盘
+         *  更新日志，用 args.entries 强制覆盖 args.prev_log_index 后的所有内容
          */
-        flush();
+        if (args.prev_log_index != -1) {
+            logs_.resize(args.prev_log_index + 1);
+        }
+        for (const auto &t : args.entries) {
+            logs_.push_back(t);
+        }
+
+        /* 更新 commit_index 和 last_applied index */
+        commit_index_ = last_log_index();
+
+        /* 将日志写入磁盘 */
+        flush_to_disk();
+
+        /* 追加日志成功 */
+        results.success = true;
+
+        /* 在状态机上执行命令 */
     }
 
     /**
@@ -365,51 +393,72 @@ void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
 
 void Node::on_set_command(Ptr<TcpStream> stream, const Json &params) {
     /**
-     * 处理用户的 set 指令，由两部分组成：
-     * 1. 向集群中的 follower 节点提交日志
-     * 2. 在 leader 节点中执行操作，将操作结果返给用户
+     * 处理用户的 set 指令，首先附加日志到本地日志中，然后通知 follower
+     * 附加日志，在超过半数的 follower 成功附加日志之后，leader
+     * 才会将操作应用到状态机中，之后在向用户返回操作的结果
      */
 
-    /**
-     * 提交日志，随后将日志写入磁盘
-     */
-    Log log = {};
-    log.term = current_term_;
-    log.info = { { "op", "set" }, { "params", params } };
+    /* 附加日志到本地，随后写入磁盘 */
+    int32_t prev_log_index = last_log_index();
+    int32_t prev_log_term = last_log_term();
+    const Log log = {
+        current_term_ /* term */,
+        { { "op", "set" }, { "params", params } } /* info */,
+    };
     logs_.push_back(log);
+    commit_index_++;
 
-    flush();
+    flush_to_disk();
 
     ThreadPool::get()->execute([=] {
-        /**
-         * 消息队列 appends 用于接收各个节点日志复制的结果
-         */
-        const auto appends = ConcurrentQueue<uint32_t>::create();
+        /* 通知 follower 附加日志 */
+        const auto appends = ConcurrentQueue<bool>::create();
 
         for (const auto &node : config_.nodes) {
             if (node != id_) {
-                uint32_t log_index = last_log_index();
+                int32_t log_index = last_log_index();
                 ThreadPool::get()->execute([=] {
-                    append(
-                        current_term_, log_index, node, "set", params, appends);
+                    const auto args = AppendRequest::Arguments(current_term_,
+                        static_cast<int32_t>(id_),
+                        prev_log_index,
+                        prev_log_term,
+                        { log },
+                        commit_index_);
+                    const Json obj = {
+                        { "op", "append" },
+                        { "params", args.to_json() },
+                    };
+                    const String buf = TcpSession::request(node, obj);
+                    printf("send to %d: %s\n", node, obj.dump().c_str());
+                    if (!buf.empty()) {
+                        const AppendRequest::Results results(Json::parse(buf));
+                        appends->enqueue(results.success);
+
+                        /* 检测到新周期 */
+                        if (results.term > current_term_) {
+                            printf("%d discover new term\n", id_);
+                        }
+                    } else {
+                        appends->enqueue(false);
+                    }
                 });
             }
         }
 
-        uint32_t total = 1;
+        /* 等待 follower 日志附加的结果 */
+        int32_t total = 1;
         for (size_t i = 1; i < config_.nodes.size(); ++i) {
-            total += appends->dequeue();
+            total += appends->dequeue() ? 1 : 0;
             if (total >= (config_.nodes.size() + 1) / 2) {
                 break;
             }
         }
-        /**
-         * 当大多数节点完成日志复制指令，将日志应用到 leader 的状态机中
-         */
+
+        /* 通知主线程，将日志应用到状态机中 */
         Message msg = {};
         msg.stream = stream;
-        msg.op = "commit";
-        msg.params = params;
+        msg.op = "apply";
+        msg.params = log.info;
         msg_queue_->enqueue(msg);
     });
 }
@@ -431,58 +480,27 @@ void Node::on_get_command(Ptr<TcpStream> stream, const Json &params) {
 
 void Node::on_echo_command(Ptr<TcpStream> stream, const Json &params) {
     /**
-     * 打印 leader 的 id 和 term
+     * 打印本节点的相关信息
      */
+
     ThreadPool::get()->execute([=] {
         stream->send({
             { "id", id_ },
             { "term", current_term_ },
+            { "commit_index", commit_index_ },
+            { "last_applied", last_applied_ },
         });
     });
 }
 
-void Node::append(uint32_t term,
-    uint32_t index,
-    uint16_t node,
-    const String &op,
-    const Json &params,
-    Ptr<ConcurrentQueue<uint32_t>> results) {
-    /**
-     * 向集群中的其他节点发送 append 指令
-     */
-
-    const Json obj = {
-        { "op", "append" },
-        {
-            "params",
-            {
-                { "term", term },
-                { "index", index },
-                { "info", { { "op", op }, { "params", params } } },
-            },
-        },
-    };
-    const auto buf = TcpSession::request(node, obj);
-    /**
-     * 处理 follower 对 append 指令的回复
-     * 通过判断返回的 index 是否一致来判断 follower 执行 append 指令是否成功
-     * 如果 append 成功，就将 1 放入 results，
-     * 如果 append 失败，将 0 放入 results 当中，append
-     * 失败后，另开一个子线程来处理失败的情形
-     */
-    if (!buf.empty()) {
-        const auto obj = Json::parse(buf);
-        if (obj.contains("index")) {
-            const uint32_t follow_index = obj.at("index").get<uint32_t>();
-            if (follow_index == index) {
-                results->enqueue(1);
-            } else {
-                results->enqueue(0);
-                Message msg = {};
-                msg.op = "rollback";
-                msg.params = { { "index", index } };
-                msg_queue_->enqueue(msg);
-            }
-        }
+void Node::apply_log(const Json &info) {
+    /* 在状态机上应用日志 */
+    const auto &op = info.at("op").get<std::string>();
+    const auto &params = info.at("params");
+    /* 应用操作日志 */
+    if (op == "set") {
+        pairs_[params.at("key").get<std::string>()] =
+            params.at("value").get<std::string>();
     }
+    last_applied_++;
 }

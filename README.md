@@ -1,10 +1,10 @@
 # raft
 
-* [Overview](#Overview)
-* [Raft](#Raft)
-* [RPC](#RPC)
-* [测试](#测试)
-* [其他](#其他)
+- [Overview](#Overview)
+- [Raft](#Raft)
+- [RPC](#RPC)
+- [测试](#测试)
+- [其他](#其他)
 
 ## Overview
 
@@ -13,7 +13,7 @@ Raft 共识算法实现，项目包括两部分：
 - C++ 编写的 Raft 实现
 - Python 编写的命令行工具
 
-### Requirements:
+### Requirements
 
 - CMake 3.13
 - Python 3.7
@@ -73,16 +73,15 @@ python3 cli.py echo  # 打印 leader 信息
 
 ### 1.3 日志复制
 
-用户命令分两阶段执行：
+leader 将操作附加到自己的日志中，然后在一个子线程中向集群中的其他节点发起 append 调用，待对大部分节点的 append 调用完成后，再将操作结果应用到 leader 的状态机中，最后向用户返回操作的结果。
 
-1. leader 向集群中的 follower 发送 append 指令
-2. 在大部分节点的 `append` 指令执行完毕后，leader 在自己的状态机中执行用户命令
+### 1.4 安全性
 
 ### 1.4 集群配置变更流程
 
-## 二、RPC
+## 二、消息队列
 
-### 2.1 消息格式
+### 2.1 消息
 
 ```cpp
 struct Message {
@@ -112,7 +111,7 @@ struct Message {
 |:-|:-|
 |**timeout**|选举超时|
 |**rollback**|回滚|
-|**commit**|提交|
+|**apply**|在状态机上应用日志|
 |**heartbeat**|向集群中其他节点发送心跳|
 
 ### 2.3 节点间消息
@@ -130,7 +129,6 @@ struct Message {
 |**get**|设置某个 key|
 |**set**|获取某个 key|
 
-
 ### 2.4 不同类型的节点收到用户命令时的行为
 
 - **follower**
@@ -143,16 +141,15 @@ struct Message {
 - **leader**
   - **user** 处理用户命令
 
-
 ## 三、测试
 
 测试样例是以 XML 格式定义的
 
 ## 四、其他
 
-### RAII 和引用计数
+### TODO
 
-实现中的套接字和对象都是我们要管理的资源
+- 命令一致性
 
 ### FAQ
 

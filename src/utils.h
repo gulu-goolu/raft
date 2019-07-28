@@ -241,7 +241,7 @@ public:
 
 private:
     ConcurrentQueue<std::function<void()>> queue_;
-    std::array<std::thread, 5> threads_ = {};
+    std::array<std::thread, 32> threads_ = {};
 };
 
 #endif

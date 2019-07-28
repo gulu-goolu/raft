@@ -83,7 +83,7 @@ Ptr<TcpStream> TcpStream::connect(const char *ip, uint16_t port) {
         if ((ret = inet_pton(AF_INET, ip, &address.sin_addr)) == -1) {
             char msg[1024] = {};
             snprintf(msg, sizeof(msg), "%s/%d", ip, port);
-			print_error(msg);
+            print_error(msg);
             break;
         }
 
@@ -134,7 +134,7 @@ Ptr<TcpListener> TcpListener::bind(const char *ip, uint16_t port) {
         if ((ret = inet_pton(AF_INET, ip, &address.sin_addr)) == -1) {
             char msg[1024] = {};
             snprintf(msg, sizeof(msg), "%s/%d", ip, port);
-			print_error(msg);
+            print_error(msg);
             break;
         }
 
@@ -143,14 +143,14 @@ Ptr<TcpListener> TcpListener::bind(const char *ip, uint16_t port) {
                 sizeof(address)) == -1) {
             char msg[1024] = {};
             snprintf(msg, sizeof(msg), "bind %s/%d failed", ip, port);
-			print_error(msg);
+            print_error(msg);
             break;
         }
 
         if (listen(fd, 10) == -1) {
             char msg[1024] = {};
             snprintf(msg, sizeof(msg), "listen  %s/%d failed", ip, port);
-			print_error(msg);
+            print_error(msg);
             break;
         }
 

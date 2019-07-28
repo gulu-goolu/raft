@@ -15,7 +15,7 @@ def send_request(request: str) -> str:
         socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
 
     # 连接
-    client.connect(("127.0.0.1", 1026))
+    client.connect(("127.0.0.1", 1024))
 
     # 发送请求
     client.send(request.encode())

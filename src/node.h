@@ -15,33 +15,45 @@ struct Log {
     /**
      * 任期和日志信息
      */
-    uint32_t term;
+    uint32_t term = -1;
     Json info;
+    Log() = default;
+    Log(int32_t term, const Json &info) : term(term), info(info) {}
+    Log(const Json &obj) {
+        term = obj.at("term").get<int32_t>();
+        info = obj.at("info");
+    }
+    Json to_json() const {
+        return Json{
+            { "term", term },
+            { "info", info },
+        };
+    }
 };
 
 /**
  * 投票请求
  */
 struct VoteRequest {
-    struct Params {
-        uint32_t term;
-        uint32_t candidate_id;
-        uint32_t last_log_index;
-        uint32_t last_log_term;
+    struct Arguments {
+        int32_t term;
+        int32_t candidate_id;
+        int32_t last_log_index;
+        int32_t last_log_term;
 
-        Params(uint32_t term,
-            uint32_t candidate_id,
-            uint32_t last_log_index,
-            uint32_t last_log_term) :
+        Arguments(int32_t term,
+            int32_t candidate_id,
+            int32_t last_log_index,
+            int32_t last_log_term) :
           term(term),
           candidate_id(candidate_id), last_log_index(last_log_index),
           last_log_term(last_log_term) {}
 
-        Params(const Json &obj) {
-            term = obj.at("term").get<uint32_t>();
-            candidate_id = obj.at("candidate_id").get<uint32_t>();
-            last_log_index = obj.at("last_log_index").get<uint32_t>();
-            last_log_term = obj.at("last_log_term").get<uint32_t>();
+        Arguments(const Json &obj) {
+            term = obj.at("term").get<int32_t>();
+            candidate_id = obj.at("candidate_id").get<int32_t>();
+            last_log_index = obj.at("last_log_index").get<int32_t>();
+            last_log_term = obj.at("last_log_term").get<int32_t>();
         }
 
         /**
@@ -81,42 +93,44 @@ struct VoteRequest {
  * 追加日志请求（也用作心跳包）
  */
 struct AppendRequest {
-    struct Params {
-        uint32_t term;
-        uint32_t leader_id;
-        uint32_t prev_log_index;
-        uint32_t prev_log_term;
+    struct Arguments {
+        int32_t term;
+        int32_t leader_id;
+        int32_t prev_log_index;
+        int32_t prev_log_term;
         Vector<Log> entries;
-        uint32_t leader_commit;
+        int32_t leader_commit;
 
-        Params(uint32_t term,
-            uint32_t leader_id,
-            uint32_t prev_log_index,
-            uint32_t prev_log_term,
+        Arguments(int32_t term,
+            int32_t leader_id,
+            int32_t prev_log_index,
+            int32_t prev_log_term,
             const Vector<Log> &entries,
-            uint32_t leader_commit) :
+            int32_t leader_commit) :
           term(term),
           leader_id(leader_id), prev_log_index(prev_log_index),
-          entries(entries), leader_commit(leader_commit) {}
+          prev_log_term(prev_log_term), entries(entries),
+          leader_commit(leader_commit) {}
 
-        Params(const Json &obj) {
-            term = obj.at("term").get<uint32_t>();
-            leader_id = obj.at("leader_id").get<uint32_t>();
-            prev_log_index = obj.at("prev_log_index").get<uint32_t>();
-            prev_log_term = obj.at("prev_log_term").get<uint32_t>();
+        Arguments(const Json &obj) {
+            term = obj.at("term").get<int32_t>();
+            leader_id = obj.at("leader_id").get<int32_t>();
+            prev_log_index = obj.at("prev_log_index").get<int32_t>();
+            prev_log_term = obj.at("prev_log_term").get<int32_t>();
             if (obj.contains("entries")) {
                 for (const auto &t : obj.at("entries")) {
-                    Log log;
-                    log.term = t.at("term").get<uint32_t>();
-                    log.info = t.at("info");
+                    Log log(t);
                     entries.push_back(log);
                 }
             }
-            leader_commit = obj.at("leader_commit").get<uint32_t>();
+            leader_commit = obj.at("leader_commit").get<int32_t>();
         }
 
         Json to_json() const {
-            Json arr;
+            Json arr = Json::array({});
+            for (const auto &t : entries) {
+                arr.push_back({ { "term", t.term }, { "info", t.info } });
+            }
             return Json{
                 { "term", term },
                 { "leader_id", leader_id },
@@ -129,13 +143,13 @@ struct AppendRequest {
     };
 
     struct Results {
-        uint32_t term;
+        int32_t term;
         bool success;
 
-        Results(uint32_t term, bool success) : term(term), success(success) {}
+        Results(int32_t term, bool success) : term(term), success(success) {}
 
         Results(const Json &obj) {
-            term = obj.at("term").get<uint32_t>();
+            term = obj.at("term").get<int32_t>();
             success = obj.at("success").get<bool>();
         }
 
@@ -145,6 +159,21 @@ struct AppendRequest {
                 { "success", success },
             };
         }
+    };
+};
+
+struct Snapshot {
+    struct Arguments {
+        int32_t term;
+        int32_t leader_id;
+        int32_t last_included_index;
+        int32_t last_included_term;
+        int32_t offset;
+        std::vector<uint8_t> data;
+        bool done;
+    };
+    struct Results {
+        int32_t term;
     };
 };
 
@@ -162,15 +191,15 @@ public:
     void vote_tick();
     void heart_tick();
     void run(const Config &config);
-    void recover();
-    void flush();
+    void recover_from_disk();
+    void flush_to_disk();
 
     void message_loop();
     /**
      * 节点内部回调
      */
     void on_timeout_command(Ptr<TcpStream> stream, const Json &params);
-    void on_commit_command(Ptr<TcpStream> stream, const Json &params);
+    void on_apply_command(Ptr<TcpStream> stream, const Json &params);
     void on_rollback_command(Ptr<TcpStream> stream, const Json &params);
     void on_heartbeat_command(Ptr<TcpStream> stream, const Json &params);
     void on_elected_command(Ptr<TcpStream> stream, const Json &params);
@@ -188,24 +217,27 @@ public:
     void on_get_command(Ptr<TcpStream> stream, const Json &params);
     void on_echo_command(Ptr<TcpStream> stream, const Json &params);
 
-    void append(uint32_t term,
-        uint32_t index,
-        uint16_t node,
-        const String &op,
-        const Json &params,
-        Ptr<ConcurrentQueue<uint32_t>> results);
-
-    uint32_t last_log_index() const {
-        return static_cast<int32_t>(logs_.size());
+    int32_t last_log_index() const {
+        return static_cast<int32_t>(logs_.size()) - 1;
     }
 
-    uint32_t last_log_term() {
-        uint32_t val = 0;
+    int32_t last_log_term() const {
+        int32_t val = -1;
         if (!logs_.empty()) {
-            val = logs_.end()->term;
+            val = logs_.rbegin()->term;
         }
         return val;
     }
+
+    int32_t term_of_log(int32_t index) const {
+        if (index == -1) {
+            return -1;
+        }
+        return logs_[index].term;
+    }
+
+    /* 应用日志 */
+    void apply_log(const Json &info);
 
 private:
     /**
@@ -225,21 +257,19 @@ private:
     uint16_t id_ = 0;
 
     /**
-     * 任期和当前任期获得的选票数目
+     * 任期以及获取选票的 candicate id
      */
-    uint32_t current_term_ = 0;
-    uint32_t voted_for_ = 0;
+    int32_t current_term_ = -1;
+    int32_t voted_for_ = -1;
     Vector<Log> logs_ = {};
 
     /**
      * 日志和状态机（这里的状态机是一个 HashMap）
      */
-    uint32_t commit_index_ = 0;
-    uint32_t last_applied_ = 0;
-
-    Vector<uint32_t> next_index_ = {};
-    Vector<uint32_t> match_index_ = {};
-
+    int32_t commit_index_ = -1;
+    int32_t last_applied_ = -1;
+    std::map<int32_t, int32_t> next_index_ = {};
+    std::map<int32_t, int32_t> match_index_ = {};
     HashMap<String, String> pairs_;
 };
 
