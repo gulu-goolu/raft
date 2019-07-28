@@ -162,6 +162,7 @@ struct AppendRequest {
     };
 };
 
+/* 安装快照 */
 struct Snapshot {
     struct Arguments {
         int32_t term;
@@ -199,8 +200,9 @@ public:
      * 节点内部回调
      */
     void on_timeout_command(Ptr<TcpStream> stream, const Json &params);
-    void on_apply_command(Ptr<TcpStream> stream, const Json &params);
-    void on_rollback_command(Ptr<TcpStream> stream, const Json &params);
+    void on_commit_command(Ptr<TcpStream> stream, const Json &params);
+    void on_refuse_command(Ptr<TcpStream> stream, const Json &params);
+    void on_accept_command(Ptr<TcpStream> stream, const Json &params);
     void on_heartbeat_command(Ptr<TcpStream> stream, const Json &params);
     void on_elected_command(Ptr<TcpStream> stream, const Json &params);
 
@@ -239,6 +241,15 @@ public:
     /* 应用日志 */
     void apply_log(const Json &info);
 
+    /* 向某个节点发起 append 请求，操作的结果放在 results 中，如果 append
+     * 因为被节点拒绝而失败，会将 refuse
+     * 指令放入消息队列。如果是网络故障，不做处理（在心跳时会处理这种情形） */
+    /* 避免使用引用而导致内存非法访问 */
+    static void append_request(uint32_t node,
+        const AppendRequest::Arguments &args,
+        Ptr<ConcurrentQueue<bool>> results,
+        Ptr<ConcurrentQueue<Message>> msg_queue);
+
 private:
     /**
      * 定时器和监听子线程，以及消息队列
@@ -266,10 +277,16 @@ private:
     /**
      * 日志和状态机（这里的状态机是一个 HashMap）
      */
+    /* 已知的最大的已经被提交的日志条目的索引值 */
     int32_t commit_index_ = -1;
+    /* 最后被应用到状态机的日志条目索引值 */
     int32_t last_applied_ = -1;
+    /* 对于每一个服务器，需要发送给他的下一个日志条目的索引值（初始化为领导人的
+     * last_log_index + 1） */
     std::map<int32_t, int32_t> next_index_ = {};
+    /* 对于每一个服务器，已经复制给他的日志的最高索引值 */
     std::map<int32_t, int32_t> match_index_ = {};
+    /* 存储的数据 */
     HashMap<String, String> pairs_;
 };
 
