@@ -147,9 +147,9 @@ void Node::recover_from_disk() {
     }
 
     /* 执行日志 */
-    for (const auto &log : logs_) {
-        apply_log(log.info);
-    }
+    //for (const auto &log : logs_) {
+    //    apply_log(log.info);
+    //}
 }
 
 void Node::flush_to_disk() {
@@ -366,7 +366,10 @@ void Node::on_elected_command(Ptr<TcpStream> stream, const Json &params) {
             match_index_[node] = -1;
         }
     }
-
+    /* 执行日志，作为 leader，执行日志是安全的 */
+    for (int32_t i = last_applied_ + 1; i < commit_index_; ++i) {
+        apply_log(logs_[i]);
+    }
     /* 等待用户输入指令 */
     user_thread_ = std::thread([=] { listen_user_port(); });
     heart_timer_ =
