@@ -1,5 +1,11 @@
 # raft
 
+* [Overview](#Overview)
+* [Raft](#Raft)
+* [RPC](#RPC)
+* [测试](#测试)
+* [其他](#其他)
+
 ## Overview
 
 Raft 共识算法实现，项目包括两部分：
@@ -74,9 +80,9 @@ python3 cli.py echo  # 打印 leader 信息
 
 ### 1.4 集群配置变更流程
 
-## 二、消息队列
+## 二、RPC
 
-### 2.1 消息
+### 2.1 消息格式
 
 ```cpp
 struct Message {
