@@ -1,11 +1,5 @@
 # raft
 
-- [Overview](#Overview)
-- [Raft](#Raft)
-- [RPC](#RPC)
-- [测试](#测试)
-- [其他](#其他)
-
 ## Overview
 
 Raft 共识算法实现，项目包括两部分：
@@ -73,9 +67,21 @@ python3 cli.py echo  # 打印 leader 信息
 
 ### 1.3 日志复制
 
-leader 将操作附加到自己的日志中，然后在一个子线程中向集群中的其他节点发起 append 调用，待对大部分节点的 append 调用完成后，再将操作结果应用到 leader 的状态机中，最后向用户返回操作的结果。
+日志复制的目的在于使 follower 和 leader 的已提交的日志保持一致。leader 会用 [next_index[node], commit_index] 这个区间的日志来构造一个附加日志请求，follower 会根据自身的状态以及请求的内容来决定接受或者拒绝请求，然后 leader 依据 follower 返回的结果来决定如何更新 match_index[node], next_index[node]以及是否要开始下一次尝试。
 
-### 1.4 安全性
+有以下几点需要注意：
+
+1. commit_index 是已经提交的日志，last_applied 是已经应用到状态机的最后一条日志，last_log_index 是已经固化的最后一条日志，之所以用三个独立的变量来描述日志是因为：并不是所有日志都是已提交的状态，并不是所有已提交的日志都被状态机执行。
+
+提交日志的时机：
+
+1. 对于 leader 来说，只要日志被复制到绝大多数的节点，日志就可以被提交
+2. 对于 follower 来说，只要日志已被 leader 提交，日志就可以被提交，但是因为在某些节点上，拥有的日志并不完全，所有 follower 决定哪些日志是可提交的时候还会考虑本节点的 last_log_index。因为很显然的是，只有本届上已经存在的日志，才是可以被提交的日志。
+3. 一旦日志被提交，就不能再更改，即是说，commit_index 是单调递增的
+
+应用日志的时机：
+
+1. 一旦日志已被提交，就可以被应用到状态机上。在我们的实现中，提交日志和应用日志是紧接着的。
 
 ### 1.4 集群配置变更流程
 
@@ -113,7 +119,8 @@ struct Message {
 |**rollback**|回滚|
 |**apply**|在状态机上应用日志|
 |**heartbeat**|向集群中其他节点发送心跳|
-|**resufe**|append 被 follower 拒绝|
+|**refuse**|append 被 follower 拒绝|
+|**accept**|append 请求被 follower 接受|
 
 ### 2.3 节点消息
 
@@ -130,15 +137,11 @@ struct Message {
 |**get**|设置某个 key|
 |**set**|获取某个 key|
 
-## 三、测试
-
-测试样例是以 XML 格式定义的
-
 ## 四、其他
 
 ### TODO
 
-- 命令一致性
+- 集群配置变更
 
 ### FAQ
 
