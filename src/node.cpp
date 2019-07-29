@@ -368,7 +368,7 @@ void Node::on_elected_command(Ptr<TcpStream> stream, const Json &params) {
     }
     /* 执行日志，作为 leader，执行日志是安全的 */
     for (int32_t i = last_applied_ + 1; i <= commit_index_; ++i) {
-        apply_log(logs_[i]);
+        apply_log(logs_[i].info);
     }
     /* 等待用户输入指令 */
     user_thread_ = std::thread([=] { listen_user_port(); });
