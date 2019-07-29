@@ -412,15 +412,13 @@ void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
      * 处理来自 leader 的 append 指令
      */
     const auto args = AppendRequest::Arguments(params);
-    AppendRequest::Results results(current_term_, false);
     if (current_term_ <= args.term) {
         /* 重置 vote timer 更新 term */
         vote_timer_->set(config_.timeout.rand());
         current_term_ = args.term;
-
-        results.term = current_term_;
     }
-
+    AppendRequest::Results results(current_term_, false);
+    
     /* 追加日志 */
     if (term_of_log(args.prev_log_index) == args.prev_log_term) {
         /* 复制日志 */
@@ -493,16 +491,16 @@ void Node::on_set_command(Ptr<TcpStream> stream, const Json &params) {
         for (size_t i = 1; i < config_.nodes.size(); ++i) {
             total += results->dequeue() ? 1 : 0;
             if (total >= (config_.nodes.size() + 1) / 2) {
+                /* 大多数节点已经成功的附加日志，在 leader 中提交日志 */
+                Message msg = {};
+                msg.stream = stream;
+                msg.op = "commit";
+                msg.params = log.info;
+                msg_queue_->enqueue(msg);
+                
                 break;
             }
         }
-
-        /* 大多数节点已经成功的附加日志，现在可以提交日志了 */
-        Message msg = {};
-        msg.stream = stream;
-        msg.op = "commit";
-        msg.params = log.info;
-        msg_queue_->enqueue(msg);
     });
 }
 
