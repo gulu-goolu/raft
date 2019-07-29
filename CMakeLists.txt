@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 2.8)
 
 project(raft)
 
@@ -14,7 +14,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
 elseif(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     # Linux 平台编译选项
     SET(RAFT_LIBRARIES pthread)
-    add_definitions(-g)
+    add_definitions(-g -std=c++11)
     set(START_SCRIPT start.sh)
 endif()
 
