@@ -65,7 +65,7 @@ python3 cli.py echo  # 打印 leader 信息
 
 ![flow](/images/flow.png)
 
-### 1.3 日志复制
+### 1.3 日志复制和安全性
 
 日志复制的目的在于使 follower 和 leader 的已提交的日志保持一致。leader 会用 [next_index[node], commit_index] 这个区间的日志来构造一个附加日志请求，follower 会根据自身的状态以及请求的内容来决定接受或者拒绝请求，然后 leader 依据 follower 返回的结果来决定如何更新 match_index[node], next_index[node]以及是否要开始下一次尝试。
 
@@ -82,6 +82,8 @@ python3 cli.py echo  # 打印 leader 信息
 应用日志的时机：
 
 1. 一旦日志已被提交，就可以被应用到状态机上。在我们的实现中，提交日志和应用日志是紧接着的。
+
+> note: next_index 和 match_index 并不是数组，而是 map，保存每个节点的 next_index 和 match_index
 
 ### 1.4 集群配置变更流程
 
