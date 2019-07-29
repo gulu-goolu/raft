@@ -145,11 +145,6 @@ void Node::recover_from_disk() {
     if (data.contains("commit_index")) {
         commit_index_ = data.at("commit_index").get<int32_t>();
     }
-
-    /* 执行日志 */
-    //for (const auto &log : logs_) {
-    //    apply_log(log.info);
-    //}
 }
 
 void Node::flush_to_disk() {
@@ -418,7 +413,7 @@ void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
         current_term_ = args.term;
     }
     AppendRequest::Results results(current_term_, false);
-    
+
     /* 追加日志 */
     if (term_of_log(args.prev_log_index) == args.prev_log_term) {
         /* 复制日志 */
@@ -497,7 +492,7 @@ void Node::on_set_command(Ptr<TcpStream> stream, const Json &params) {
                 msg.op = "commit";
                 msg.params = log.info;
                 msg_queue_->enqueue(msg);
-                
+
                 break;
             }
         }
