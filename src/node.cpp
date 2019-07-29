@@ -289,9 +289,9 @@ void Node::on_refuse_command(Ptr<TcpStream> stream, const Json &params) {
      */
     const uint16_t node = params.at("node").get<uint16_t>();
     const int32_t index = params.at("index").get<int32_t>();
-    next_index_[node] = index - 1;
 
     /* 将 next_index 减一，然后重试 */
+    next_index_[node] = index - 1;
     const int32_t log_index = next_index_[node];
     const int32_t log_term = term_of_log(log_index);
     std::vector<Log> logs;
@@ -366,7 +366,7 @@ void Node::on_elected_command(Ptr<TcpStream> stream, const Json &params) {
             match_index_[node] = -1;
         }
     }
-    /* 执行日志，作为 leader，执行日志是安全的 */
+    /* 执行日志，将状态机更新到最新的状态 */
     for (int32_t i = last_applied_ + 1; i <= commit_index_; ++i) {
         apply_log(logs_[i].info);
     }
@@ -427,7 +427,7 @@ void Node::on_append_command(Ptr<TcpStream> stream, const Json &params) {
             logs_.push_back(t);
         }
 
-        /* 将日志写入磁盘 */
+        /* 如果日志有变更，将日志写入磁盘 */
         flush_to_disk();
 
         /* 更新 commit_index */
