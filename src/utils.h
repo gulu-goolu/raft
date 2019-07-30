@@ -206,13 +206,8 @@ public:
                 /**
                  * 执行任务的线程
                  */
-                while (true) {
-                    const auto func = queue_.dequeue();
-                    if (func) {
-                        func();
-                    } else {
-                        break;
-                    }
+                while ((func = queue_.dequeue())) {
+                    func();
                 }
             });
         }
