@@ -3,7 +3,7 @@
 
 #include "net.h"
 #include "pch.h"
-#include "utils.h"
+#include "util.h"
 
 struct Message {
     Ptr<TcpStream> stream;
@@ -215,9 +215,14 @@ public:
     /**
      * 用户命令回调
      */
+    /* 获取/设置 key-value */
     void on_set_command(Ptr<TcpStream> stream, const Json &params);
     void on_get_command(Ptr<TcpStream> stream, const Json &params);
+    /* 打印节点信息 */
     void on_echo_command(Ptr<TcpStream> stream, const Json &params);
+    /* 添加移除节点 */
+    void on_add_command(Ptr<TcpStream> stream, const Json &params);
+    void on_remove_command(Ptr<TcpStream> stream, const Json &params);
 
     int32_t last_log_index() const {
         return static_cast<int32_t>(logs_.size()) - 1;

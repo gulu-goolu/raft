@@ -138,6 +138,8 @@ struct Message {
 |**echo**|打印进程 id|
 |**get**|设置某个 key|
 |**set**|获取某个 key|
+|**add**|添加节点|
+|**remove**|删除节点|
 
 ## 三、其他
 

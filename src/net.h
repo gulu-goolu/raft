@@ -2,7 +2,7 @@
 #define NET_H
 
 #include "pch.h"
-#include "utils.h"
+#include "util.h"
 
 #ifdef _WIN32
 

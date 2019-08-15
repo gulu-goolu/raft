@@ -538,6 +538,10 @@ void Node::on_echo_command(Ptr<TcpStream> stream, const Json &params) {
     });
 }
 
+void Node::on_add_command(Ptr<TcpStream> stream, const Json &params) {}
+
+void Node::on_remove_command(Ptr<TcpStream> stream, const Json &params) {}
+
 void Node::apply_log(const Json &info) {
     /* 在状态机上应用日志 */
     const auto &op = info.at("op").get<std::string>();
