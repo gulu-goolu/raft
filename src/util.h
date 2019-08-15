@@ -63,7 +63,7 @@ public:
         }
         if (ptr_) {
             if (ptr_->dec_ref()) {
-                ptr_->~RefCounted();
+                ptr_->~T();
                 Allocator().free(ptr_);
             }
         }
