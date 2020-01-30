@@ -2,17 +2,21 @@
 
 ## Overview
 
-Raft 共识算法实现，项目包括两部分：
+A simply implemention of Raft consensus algorithm.
 
-- C++ 编写的 Raft 实现
-- Python 编写的命令行工具
+## Features
+
+- python client
+- c++ server
+- test utils wrote by doccker
 
 ### Requirements
 
-- CMake 3.13
-- Python 3.7
-- Clang 7.0 or visual studio 2015
-- Git 2.21
+- cmake
+- golang
+- docker
+- clang or visual studio
+- git
 
 ### Build
 
